@@ -157,7 +157,7 @@ download_release() {
   local checksum
   local base_url
 
-  machine="$(uname -m)"
+  machine="${HACO_INSTALL_MACHINE:-$(uname -m)}"
   case "$machine" in
     x86_64|amd64) release_arch="x86_64" ;;
     aarch64|arm64) release_arch="arm64" ;;
@@ -184,9 +184,11 @@ download_release() {
     cd "$WORK_DIR"
     sha256sum --check "$checksum"
   )
-  tar -xzf "${WORK_DIR}/${asset}" -C "$WORK_DIR"
-  [[ -f "${WORK_DIR}/haco-server" ]] || fail "release archive does not contain haco-server"
-  install -m 0755 "${WORK_DIR}/haco-server" "$destination"
+  local extracted_dir="${WORK_DIR}/release"
+  install -d -m 0755 "$extracted_dir"
+  tar -xzf "${WORK_DIR}/${asset}" -C "$extracted_dir"
+  [[ -f "${extracted_dir}/haco-server" ]] || fail "release archive does not contain haco-server"
+  install -m 0755 "${extracted_dir}/haco-server" "$destination"
 }
 
 while [[ $# -gt 0 ]]; do
