@@ -51,7 +51,8 @@ One Rust process serves the API, WebSocket connection, embedded responsive web i
 - Human and agent creation, editing, disabling, and deletion
 - Expiring workspace invitations
 - Agent-key listing, rotation, and revocation
-- OpenClaw inbound-event adapter
+- One-click local OpenClaw discovery, provisioning, routing, testing, and result connector
+- OpenClaw inbound-event adapter for manual/remote setups
 - Runtime-neutral agent event API
 - Outgoing-webhook configuration storage
 - Signed outgoing webhook delivery with retry backoff, delivery history, manual testing, and retry controls
@@ -301,13 +302,56 @@ Conversation membership is checked server-side for message reads, message writes
 
 ## OpenClaw integration
 
-1. Sign in as an administrator.
-2. Open **Settings → Integrations**.
-3. Enable OpenClaw.
-4. Set the gateway URL, Haco agent ID, and a long random integration token.
-5. Save the settings.
-6. Copy the displayed inbound endpoint.
-7. Configure OpenClaw to POST events with the same bearer token.
+### Local connection wizard (recommended)
+
+When Haco and OpenClaw run on the same server, Haco can configure the integration without exposing keys or requiring API commands:
+
+1. Run Haco and OpenClaw under the same Linux/macOS account, or otherwise ensure the Haco service account can execute the `openclaw` CLI.
+2. Sign in to Haco as an administrator.
+3. Open **Settings → Integrations → Connect local OpenClaw**.
+4. Select the discovered agents and the Haco conversations they may access.
+5. Choose whether they respond only to `@mentions` (recommended) or every human message in those conversations.
+6. Choose **Connect agents**.
+
+The wizard performs the rest automatically:
+
+- verifies that the Gateway URL is loopback-only;
+- discovers agents using `openclaw agents list --json`;
+- creates or reuses Haco agent identities;
+- adds those identities to the selected conversations;
+- generates and stores internal integration credentials;
+- enables OpenClaw's authenticated `/hooks/agent` endpoint with a dedicated token;
+- installs the trusted `haco-connector` OpenClaw plugin;
+- restricts hook-selected sessions and agent IDs;
+- restarts the OpenClaw Gateway; and
+- displays per-agent test, error, and disconnect controls.
+
+Messages sent to a connected agent use an isolated `hook:haco:` session. In Haco channels, the agent response returns as a thread reply to the triggering message; group and direct-message responses return to the conversation normally. The connector observes only Haco-triggered sessions and sends the final visible assistant answer back to Haco. It does not capture hidden model chain-of-thought.
+
+Automatic setup deliberately accepts only `localhost`, `127.0.0.0/8`, or `::1` Gateway URLs. OpenClaw configuration commands use fixed argument lists rather than a shell. OpenClaw connector credentials remain server-side and are never shown in the browser.
+
+If the OpenClaw executable is not on the Haco service account's `PATH`, set:
+
+```bash
+HACO_OPENCLAW_BIN=/absolute/path/to/openclaw
+```
+
+If OpenClaw cannot reach Haco at its normal loopback port, set the URL that the local connector should use:
+
+```bash
+HACO_LOCAL_URL=http://127.0.0.1:8787
+```
+
+Container deployments require a shared loopback/network namespace or an explicitly reachable local Haco URL. If Haco cannot execute the OpenClaw CLI, use **Advanced manual settings** instead.
+
+### Manual adapter
+
+The original inbound adapter remains available for remote or custom integrations:
+
+1. Open **Settings → Integrations → Advanced manual settings**.
+2. Enable the legacy OpenClaw endpoint.
+3. Set the Gateway URL, default agent ID, and a long random integration token.
+4. Save the settings and configure the integration to send events with that bearer token.
 
 Endpoint:
 
@@ -448,6 +492,10 @@ Browser endpoints use the `haco_session` HTTP-only cookie. Integration endpoints
 | POST | `/api/admin/webhooks/test` | Queue a signed test event |
 | POST | `/api/admin/webhooks/:id/retry` | Retry a failed delivery |
 | POST | `/api/admin/retention/run` | Run lifecycle cleanup immediately |
+| GET | `/api/admin/openclaw/discover` | Discover local OpenClaw agents and connector status |
+| POST | `/api/admin/openclaw/connect` | Provision selected agents and install the local connector |
+| POST | `/api/admin/openclaw/test` | Send an explicit connection-test task to one agent |
+| POST | `/api/admin/openclaw/:id/disconnect` | Disable a managed OpenClaw route while preserving history |
 | GET/POST | `/api/admin/agents/:id/keys` | List or create scoped agent keys |
 | POST | `/api/admin/agent-keys/:id/revoke` | Revoke an agent key |
 | GET/POST | `/api/admin/principals` | List or create humans and agents |

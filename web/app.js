@@ -1,4 +1,4 @@
-const state = { conversations: [], selected: null, messages: [], currentUser: null, replyTo: null, threadRoot: null, socket: null, filter: 'all', adminToken: null, adminSettings: null, settingsTab: 'workspace', authStatus: null, users: [], modalSubmit: null, typingTimer: null, draftTimer: null, remoteTyping: new Map(), pendingAttachments: [], hasOlder: false, notifications: [], pushRegistration: null, pushConfiguration: null };
+const state = { conversations: [], selected: null, messages: [], currentUser: null, replyTo: null, threadRoot: null, socket: null, filter: 'all', adminToken: null, adminSettings: null, settingsTab: 'workspace', authStatus: null, users: [], modalSubmit: null, typingTimer: null, draftTimer: null, remoteTyping: new Map(), pendingAttachments: [], hasOlder: false, notifications: [], pushRegistration: null, pushConfiguration: null, openclawDiscovery: null };
 const dom = {
   list: document.querySelector('#conversations'), feed: document.querySelector('#messages'), title: document.querySelector('#conversation-title'),
   kind: document.querySelector('#conversation-kind'), description: document.querySelector('#conversation-description'), status: document.querySelector('#connection-status'),
@@ -28,6 +28,7 @@ const dom = {
   mediaViewer: document.querySelector('#media-viewer'), mediaViewerContent: document.querySelector('#media-viewer-content'), closeMediaViewer: document.querySelector('#close-media-viewer'),
   mentionSuggestions: document.querySelector('#mention-suggestions'),
   testWebhook: document.querySelector('#test-webhook'), refreshWebhooks: document.querySelector('#refresh-webhooks'), webhookDeliveries: document.querySelector('#webhook-deliveries'),
+  openOpenClawWizard: document.querySelector('#open-openclaw-wizard'), refreshOpenClaw: document.querySelector('#refresh-openclaw'), openclawConnections: document.querySelector('#openclaw-connections'), openclawOverallState: document.querySelector('#openclaw-overall-state'), openclawWizardStatus: document.querySelector('#openclaw-wizard-status'),
   runRetention: document.querySelector('#run-retention'), retentionStatus: document.querySelector('#retention-status'),
   createHuman: document.querySelector('#create-human'), createAgent: document.querySelector('#create-agent'), createInvite: document.querySelector('#create-invite'),
   workspaceModal: document.querySelector('#workspace-modal'), workspaceModalTitle: document.querySelector('#workspace-modal-title'), workspaceModalBody: document.querySelector('#workspace-modal-body'), workspaceModalForm: document.querySelector('#workspace-modal-form'), workspaceModalError: document.querySelector('#workspace-modal-error'), closeWorkspaceModal: document.querySelector('#close-workspace-modal'), workspaceModalCancel: document.querySelector('#workspace-modal-cancel'), workspaceModalSubmit: document.querySelector('#workspace-modal-submit')
@@ -235,6 +236,7 @@ async function showSettingsWorkspace() {
   selectSettingsTab(state.settingsTab);
   try { renderSettingsUsers(await request(state.currentUser?.access_role === 'admin' ? '/api/admin/principals' : '/api/users')); } catch (_) { renderSettingsUsers([]); }
   refreshWebhookDeliveries();
+  refreshOpenClawStatus();
 }
 
 async function refreshWebhookDeliveries() {
@@ -252,6 +254,126 @@ async function sendWebhookTest() {
   finally { dom.testWebhook.disabled = false; }
 }
 
+async function refreshOpenClawStatus() {
+  dom.refreshOpenClaw.disabled = true;
+  dom.openclawOverallState.textContent = 'Checking…';
+  dom.openclawOverallState.className = 'connection-pill';
+  try {
+    const discovery = await request('/api/admin/openclaw/discover', { headers: adminHeaders() });
+    state.openclawDiscovery = discovery;
+    renderOpenClawConnections(discovery);
+  } catch (error) {
+    dom.openclawOverallState.textContent = 'Needs attention';
+    dom.openclawOverallState.className = 'connection-pill error';
+    dom.openclawConnections.innerHTML = `<p class="settings-error">${escapeHtml(error.message)}</p>`;
+  } finally {
+    dom.refreshOpenClaw.disabled = false;
+  }
+}
+
+function renderOpenClawConnections(discovery) {
+  const connected = discovery.connections.filter((connection) => connection.status === 'connected');
+  const errors = discovery.connections.filter((connection) => connection.status === 'error');
+  if (errors.length) {
+    dom.openclawOverallState.textContent = `${errors.length} need attention`;
+    dom.openclawOverallState.className = 'connection-pill error';
+  } else if (connected.length) {
+    dom.openclawOverallState.textContent = `${connected.length} connected`;
+    dom.openclawOverallState.className = 'connection-pill connected';
+  } else {
+    dom.openclawOverallState.textContent = discovery.gateway_reachable ? 'Ready to connect' : 'Not connected';
+    dom.openclawOverallState.className = 'connection-pill';
+  }
+  const statusCopy = dom.openclawWizardStatus.querySelector('small');
+  const versionLabel = (discovery.version || '').replace(/^openclaw\s*/i, '').trim();
+  statusCopy.textContent = discovery.cli_available
+    ? `OpenClaw ${versionLabel} ${discovery.gateway_reachable ? 'is running locally and ready.' : 'was found, but its Gateway is not reachable yet.'}`.replace(/\s+/g, ' ').trim()
+    : (discovery.notice || 'OpenClaw was not found for the user running Haco.');
+  dom.openclawWizardStatus.classList.toggle('error', !discovery.cli_available);
+  dom.openclawConnections.innerHTML = discovery.connections.map((connection) => {
+    const conversations = connection.conversation_ids.map((id) => discovery.conversations.find((item) => item.id === id)?.title || id).join(', ');
+    const detail = connection.last_error || `${connection.response_mode === 'always' ? 'Responds to every message' : 'Responds when mentioned'} · ${conversations}`;
+    return `<div class="openclaw-connection ${connection.status === 'error' ? 'error' : ''}"><span class="openclaw-connection-avatar">${escapeHtml(connection.display_name.slice(0, 1).toUpperCase())}</span><span><strong>${escapeHtml(connection.display_name)}</strong><small>${escapeHtml(detail)}</small></span><span class="openclaw-connection-actions"><button class="settings-inline-button" type="button" data-test-openclaw="${escapeHtml(connection.openclaw_agent_id)}">Test</button><button class="settings-inline-button" type="button" data-disconnect-openclaw="${escapeHtml(connection.openclaw_agent_id)}">Disconnect</button></span></div>`;
+  }).join('') || '<p class="settings-help">No connected agents yet. The wizard can connect all agents on this server in one pass.</p>';
+  dom.openclawConnections.querySelectorAll('[data-test-openclaw]').forEach((button) => button.addEventListener('click', async () => {
+    button.disabled = true;
+    button.textContent = 'Testing…';
+    try {
+      await request('/api/admin/openclaw/test', { method: 'POST', headers: adminHeaders(), body: JSON.stringify({ openclaw_agent_id: button.dataset.testOpenclaw }) });
+      dom.settingsSaveStatus.textContent = 'Test sent · waiting for agent reply';
+      window.setTimeout(() => { dom.settingsSaveStatus.textContent = ''; }, 5000);
+      await refreshOpenClawStatus();
+    } catch (error) {
+      dom.settingsFormError.textContent = error.message;
+      dom.settingsFormError.hidden = false;
+      await refreshOpenClawStatus();
+    } finally {
+      button.disabled = false;
+      button.textContent = 'Test';
+    }
+  }));
+  dom.openclawConnections.querySelectorAll('[data-disconnect-openclaw]').forEach((button) => button.addEventListener('click', async () => {
+    if (!window.confirm('Disconnect this OpenClaw agent from Haco? Existing messages will be kept.')) return;
+    button.disabled = true;
+    try {
+      await request(`/api/admin/openclaw/${encodeURIComponent(button.dataset.disconnectOpenclaw)}/disconnect`, { method: 'POST', headers: adminHeaders() });
+      await refreshOpenClawStatus();
+      state.users = await request('/api/admin/principals');
+      renderSettingsUsers(state.users);
+    } catch (error) {
+      dom.settingsFormError.textContent = error.message;
+      dom.settingsFormError.hidden = false;
+    } finally { button.disabled = false; }
+  }));
+}
+
+async function openOpenClawWizard() {
+  dom.openOpenClawWizard.disabled = true;
+  dom.openOpenClawWizard.textContent = 'Discovering…';
+  try {
+    const discovery = await request('/api/admin/openclaw/discover', { headers: adminHeaders() });
+    state.openclawDiscovery = discovery;
+    if (!discovery.cli_available) throw new Error(discovery.notice || 'OpenClaw CLI was not found.');
+    if (!discovery.agents.length) throw new Error('No OpenClaw agents were discovered on this server.');
+    const alreadyConnected = new Set(discovery.connections.map((connection) => connection.openclaw_agent_id));
+    const agentOptions = discovery.agents.map((agent) => `<label class="wizard-agent-option"><input type="checkbox" name="openclaw_agents" value="${escapeHtml(agent.id)}" ${alreadyConnected.has(agent.id) ? 'checked' : ''}/><span class="openclaw-connection-avatar">${escapeHtml(agent.display_name.slice(0, 1).toUpperCase())}</span><span><strong>${escapeHtml(agent.display_name)}</strong><small>${escapeHtml(agent.workspace || agent.id)}</small></span></label>`).join('');
+    const conversationOptions = discovery.conversations.filter((conversation) => !conversation.archived).map((conversation) => `<label><input type="checkbox" name="openclaw_conversations" value="${escapeHtml(conversation.id)}" ${conversation.kind === 'channel' ? 'checked' : ''}/><span class="settings-user-avatar">${escapeHtml(iconFor(conversation.kind))}</span><span><strong>${escapeHtml(conversation.title)}</strong><small>${escapeHtml(labelFor(conversation.kind))}</small></span></label>`).join('');
+    openWorkspaceModal('Connect local OpenClaw', `<div class="wizard-progress"><span class="active">1 · Discovered</span><span class="active">2 · Choose access</span><span>3 · Connect</span></div><div class="wizard-discovery"><div><strong>${discovery.cli_available ? 'OpenClaw found' : 'Not found'}</strong><small>${escapeHtml(discovery.version || 'Version unavailable')}</small></div><div><strong>${discovery.gateway_reachable ? 'Gateway online' : 'Gateway not reachable'}</strong><small>${escapeHtml(discovery.gateway_url)}</small></div></div><label class="settings-field"><span>Local Gateway URL</span><small>Automatic setup is restricted to this server.</small><input name="gateway_url" type="url" value="${escapeHtml(discovery.gateway_url)}" required /></label><div><span class="modal-label">Agents to connect</span><div class="wizard-agent-picker">${agentOptions}</div></div><div><span class="modal-label">Conversations these agents can access</span><div class="member-picker">${conversationOptions}</div></div><label class="settings-field"><span>When should agents respond?</span><select name="response_mode"><option value="mentions">Only when @mentioned (recommended)</option><option value="always">Every human message in selected conversations</option></select></label><p class="wizard-note">Haco will create the agent accounts, add them to these conversations, generate credentials, configure OpenClaw hooks, install the local result connector, and restart the OpenClaw Gateway.</p>`, async (form) => {
+      const selectedAgentIds = [...form.querySelectorAll('[name="openclaw_agents"]:checked')].map((input) => input.value);
+      const conversationIds = [...form.querySelectorAll('[name="openclaw_conversations"]:checked')].map((input) => input.value);
+      if (!selectedAgentIds.length) throw new Error('Select at least one agent.');
+      if (!conversationIds.length) throw new Error('Select at least one conversation.');
+      dom.workspaceModalSubmit.textContent = 'Connecting…';
+      await request('/api/admin/openclaw/connect', {
+        method: 'POST',
+        headers: adminHeaders(),
+        body: JSON.stringify({
+          gateway_url: form.gateway_url.value,
+          install_connector: true,
+          agents: selectedAgentIds.map((id) => {
+            const agent = discovery.agents.find((item) => item.id === id);
+            return { openclaw_agent_id: id, display_name: agent.display_name, conversation_ids: conversationIds, response_mode: form.response_mode.value };
+          })
+        })
+      });
+      closeWorkspaceModal();
+      state.adminSettings = await request('/api/admin/settings', { headers: adminHeaders() });
+      fillSettingsForm();
+      await refreshOpenClawStatus();
+      state.users = await request('/api/admin/principals');
+      renderSettingsUsers(state.users);
+      dom.settingsSaveStatus.textContent = `${selectedAgentIds.length} OpenClaw agent${selectedAgentIds.length === 1 ? '' : 's'} connected`;
+      window.setTimeout(() => { dom.settingsSaveStatus.textContent = ''; }, 4500);
+    }, 'Connect agents');
+  } catch (error) {
+    dom.settingsFormError.textContent = error.message;
+    dom.settingsFormError.hidden = false;
+  } finally {
+    dom.openOpenClawWizard.disabled = false;
+    dom.openOpenClawWizard.textContent = 'Connect local OpenClaw';
+  }
+}
+
 async function runRetentionCleanup() {
   dom.runRetention.disabled = true; dom.retentionStatus.textContent = 'Cleaning…';
   try { const result = await request('/api/admin/retention/run', { method: 'POST' }); dom.retentionStatus.textContent = `Complete · ${result.removed_objects} stored object${result.removed_objects === 1 ? '' : 's'} removed`; }
@@ -259,11 +381,12 @@ async function runRetentionCleanup() {
   finally { dom.runRetention.disabled = false; }
 }
 
-function openWorkspaceModal(title, body, submit) {
+function openWorkspaceModal(title, body, submit, submitLabel = 'Save changes') {
   dom.workspaceModalTitle.textContent = title;
   dom.workspaceModalBody.innerHTML = body;
   dom.workspaceModalError.hidden = true;
   state.modalSubmit = submit;
+  dom.workspaceModalSubmit.textContent = submitLabel;
   dom.workspaceModal.hidden = false;
   window.setTimeout(() => dom.workspaceModalBody.querySelector('input,textarea,select')?.focus(), 70);
 }
@@ -970,6 +1093,8 @@ dom.createAgent.addEventListener('click', () => openCreatePrincipal('agent'));
 dom.createInvite.addEventListener('click', openCreateInvite);
 dom.testWebhook.addEventListener('click', sendWebhookTest);
 dom.refreshWebhooks.addEventListener('click', refreshWebhookDeliveries);
+dom.openOpenClawWizard.addEventListener('click', openOpenClawWizard);
+dom.refreshOpenClaw.addEventListener('click', refreshOpenClawStatus);
 dom.runRetention.addEventListener('click', runRetentionCleanup);
 dom.attachmentButton.addEventListener('click', () => dom.attachmentInput.click());
 dom.attachmentInput.addEventListener('change', () => uploadFiles([...dom.attachmentInput.files]));

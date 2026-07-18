@@ -1,0 +1,24 @@
+{
+  "id": "haco-connector",
+  "name": "Haco Connector",
+  "description": "Returns Haco-triggered OpenClaw agent results to the originating Haco conversation.",
+  "activation": { "onStartup": true },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["hacoUrl", "token", "principalMap"],
+    "properties": {
+      "hacoUrl": { "type": "string" },
+      "token": { "type": "string" },
+      "principalMap": {
+        "type": "object",
+        "additionalProperties": { "type": "string" }
+      }
+    }
+  },
+  "uiHints": {
+    "hacoUrl": { "label": "Local Haco URL" },
+    "token": { "label": "Haco connector token", "sensitive": true },
+    "principalMap": { "advanced": true }
+  }
+}
