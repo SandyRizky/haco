@@ -51,7 +51,7 @@ One Rust process serves the API, WebSocket connection, embedded responsive web i
 - Human and agent creation, editing, disabling, and deletion
 - Expiring workspace invitations
 - Agent-key listing, rotation, and revocation
-- One-click local OpenClaw discovery, provisioning, routing, testing, and result connector
+- One-click local OpenClaw discovery, configuration backup, provisioning, routing, testing, and result connector
 - OpenClaw inbound-event adapter for manual/remote setups
 - Runtime-neutral agent event API
 - Outgoing-webhook configuration storage
@@ -205,6 +205,7 @@ Haco is configured through environment variables and the administrator settings 
 | `HACO_VAPID_SUBJECT` | `mailto:admin@haco.local` | VAPID contact URI; set this to an operator email in production |
 | `HACO_ADMIN_TOKEN` | unset | Optional operator fallback for the settings API |
 | `HACO_DEV_MOCK_AUTH` | `false` | Display and enable the testing-only administrator login |
+| `HACO_OPENCLAW_BACKUP_DIR` | beside the database in `openclaw-config-backups` | Protected destination for OpenClaw configuration snapshots made before wizard changes |
 | `RUST_LOG` | built-in defaults | Rust logging filter, such as `haco_server=debug` |
 
 Boolean variables accept `true` or `1` as enabled.
@@ -325,6 +326,7 @@ The wizard performs the rest automatically:
 
 - verifies that the Gateway URL is loopback-only;
 - discovers agents using `openclaw agents list --json`;
+- creates a protected, timestamped backup of the active OpenClaw configuration and any configuration files it includes;
 - creates or reuses Haco agent identities;
 - adds those identities to the selected conversations;
 - generates and stores internal integration credentials;
@@ -336,7 +338,16 @@ The wizard performs the rest automatically:
 
 Messages sent to a connected agent use an isolated `hook:haco:` session. In Haco channels, the agent response returns as a thread reply to the triggering message; group and direct-message responses return to the conversation normally. The connector observes only Haco-triggered sessions and sends the final visible assistant answer back to Haco. It does not capture hidden model chain-of-thought.
 
-Automatic setup deliberately accepts only `localhost`, `127.0.0.0/8`, or `::1` Gateway URLs. OpenClaw configuration commands use fixed argument lists rather than a shell. OpenClaw connector credentials remain server-side and are never shown in the browser.
+Automatic setup deliberately accepts only `localhost`, `127.0.0.0/8`, or `::1` Gateway URLs. Before every setup run, Haco uses the read-only `openclaw config file` command to locate the active regular config file and saves a `0700`-protected snapshot before it installs a plugin, writes settings, or restarts the Gateway. By default, snapshots are under `openclaw-config-backups` beside Haco's SQLite database (normally `/var/lib/haco/openclaw-config-backups`); set `HACO_OPENCLAW_BACKUP_DIR` to use a different protected location. Haco cancels setup if it cannot make the backup. OpenClaw configuration commands use fixed argument lists rather than a shell. OpenClaw connector credentials remain server-side and are never shown in the browser.
+
+If a setup needs to be rolled back, run the following as the same account that owns OpenClaw, replacing `BACKUP_PATH` with the snapshot shown in the wizard error or Haco audit log. It restores the active config and every backed-up include, then validates before restarting the Gateway:
+
+```bash
+CONFIG="$(openclaw config file)"
+cp -a BACKUP_PATH/. "$(dirname "$CONFIG")"/
+openclaw config validate
+openclaw gateway restart
+```
 
 If the OpenClaw executable is not on the Haco service account's `PATH`, set:
 

@@ -532,6 +532,40 @@ struct OpenClawDiscoveryResponse {
     notice: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct OpenClawConfigBackup {
+    path: String,
+    files: usize,
+}
+
+#[derive(Serialize)]
+struct OpenClawConnectResponse {
+    connections: Vec<OpenClawConnectionRecord>,
+    config_backup: OpenClawConfigBackup,
+}
+
+#[derive(Debug)]
+struct OpenClawConnectorInstallError {
+    message: String,
+    config_backup: Option<OpenClawConfigBackup>,
+}
+
+impl OpenClawConnectorInstallError {
+    fn before_backup(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            config_backup: None,
+        }
+    }
+
+    fn after_backup(message: impl Into<String>, config_backup: OpenClawConfigBackup) -> Self {
+        Self {
+            message: message.into(),
+            config_backup: Some(config_backup),
+        }
+    }
+}
+
 #[derive(Deserialize)]
 struct OpenClawWizardAgentRequest {
     openclaw_agent_id: String,
@@ -2117,7 +2151,7 @@ async fn connect_openclaw(
     headers: HeaderMap,
     State(state): State<AppState>,
     Json(request): Json<OpenClawWizardConnectRequest>,
-) -> Result<Json<Vec<OpenClawConnectionRecord>>, ApiError> {
+) -> Result<Json<OpenClawConnectResponse>, ApiError> {
     let admin = require_admin_user(&headers, &state)?;
     if request.agents.is_empty() {
         return Err(ApiError::bad_request("select at least one OpenClaw agent"));
@@ -2210,21 +2244,49 @@ async fn connect_openclaw(
         .lock()
         .map_err(|_| ApiError::internal("database lock poisoned"))?;
     match install_result {
-        Ok(()) => {
+        Ok(config_backup) => {
             store.set_openclaw_connector_status(true, None)?;
             store.audit(
                 Some(&admin.id),
                 "openclaw.connected",
                 "integration",
                 None,
-                Some(serde_json::json!({"agent_count": agent_ids.len()})),
+                Some(serde_json::json!({
+                    "agent_count": agent_ids.len(),
+                    "config_backup_path": config_backup.path,
+                    "config_backup_files": config_backup.files,
+                })),
             )?;
-            Ok(Json(store.openclaw_connections()?))
+            Ok(Json(OpenClawConnectResponse {
+                connections: store.openclaw_connections()?,
+                config_backup,
+            }))
         }
         Err(error) => {
-            store.set_openclaw_connector_status(false, Some(&error))?;
+            store.set_openclaw_connector_status(false, Some(&error.message))?;
+            store.audit(
+                Some(&admin.id),
+                "openclaw.connection_failed",
+                "integration",
+                None,
+                Some(serde_json::json!({
+                    "agent_count": agent_ids.len(),
+                    "config_backup_path": error.config_backup.as_ref().map(|backup| &backup.path),
+                    "error": error.message,
+                })),
+            )?;
+            let backup_detail = error.config_backup.as_ref().map(|backup| {
+                format!(
+                    " OpenClaw configuration backup: {} ({} file{}).",
+                    backup.path,
+                    backup.files,
+                    if backup.files == 1 { "" } else { "s" }
+                )
+            });
             Err(ApiError::service_unavailable(format!(
-                "Haco created the agent mappings, but OpenClaw connector installation failed: {error}"
+                "Haco created the agent mappings, but OpenClaw connector installation failed: {}{}",
+                error.message,
+                backup_detail.unwrap_or_default(),
             )))
         }
     }
@@ -2484,6 +2546,257 @@ async fn post_openclaw_hook(
     }
 }
 
+async fn backup_openclaw_config() -> Result<OpenClawConfigBackup, String> {
+    let output = run_openclaw_command(&["config", "file"])
+        .await
+        .map_err(|error| format!("locating the active OpenClaw configuration: {error}"))?;
+    let config_file = active_openclaw_config_file(&output)?;
+    let backup_directory = std::env::var("HACO_OPENCLAW_BACKUP_DIR")
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            std::env::var("HACO_DATABASE")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| PathBuf::from("haco.db"))
+                .parent()
+                .unwrap_or_else(|| FilePath::new("."))
+                .join("openclaw-config-backups")
+        });
+    create_openclaw_config_backup(&config_file, &backup_directory)
+}
+
+fn active_openclaw_config_file(output: &str) -> Result<PathBuf, String> {
+    let path = output.trim();
+    if path.is_empty() || path.lines().count() != 1 {
+        return Err("OpenClaw did not return one active configuration file path".to_owned());
+    }
+    let path = PathBuf::from(path);
+    if !path.is_absolute() {
+        return Err("OpenClaw returned a relative configuration file path; refusing to change configuration without a backup".to_owned());
+    }
+    regular_file(&path, "active OpenClaw configuration")?;
+    path.canonicalize()
+        .map_err(|error| format!("resolving {}: {error}", path.display()))
+}
+
+fn create_openclaw_config_backup(
+    config_file: &FilePath,
+    backup_directory: &FilePath,
+) -> Result<OpenClawConfigBackup, String> {
+    regular_file(config_file, "active OpenClaw configuration")?;
+    let config_file = config_file
+        .canonicalize()
+        .map_err(|error| format!("resolving {}: {error}", config_file.display()))?;
+    let config_root = config_file
+        .parent()
+        .ok_or_else(|| "OpenClaw configuration file does not have a parent directory".to_owned())?
+        .canonicalize()
+        .map_err(|error| format!("resolving OpenClaw configuration directory: {error}"))?;
+    let files = collect_openclaw_config_files(&config_file, &config_root)?;
+
+    std::fs::create_dir_all(backup_directory).map_err(|error| {
+        format!(
+            "creating OpenClaw backup directory {}: {error}",
+            backup_directory.display()
+        )
+    })?;
+    restrict_openclaw_backup_permissions(backup_directory, true)?;
+    let timestamp = Utc::now().format("%Y%m%dT%H%M%SZ");
+    let snapshot = backup_directory.join(format!("openclaw-{timestamp}-{}", Uuid::new_v4()));
+    std::fs::create_dir(&snapshot).map_err(|error| {
+        format!(
+            "creating OpenClaw backup snapshot {}: {error}",
+            snapshot.display()
+        )
+    })?;
+    restrict_openclaw_backup_permissions(&snapshot, true)?;
+
+    for file in &files {
+        let relative = file.strip_prefix(&config_root).map_err(|_| {
+            format!(
+                "OpenClaw configuration file {} is outside the configuration root",
+                file.display()
+            )
+        })?;
+        let destination = snapshot.join(relative);
+        let parent = destination.parent().ok_or_else(|| {
+            format!(
+                "OpenClaw backup destination {} does not have a parent directory",
+                destination.display()
+            )
+        })?;
+        std::fs::create_dir_all(parent).map_err(|error| {
+            format!(
+                "creating OpenClaw backup directory {}: {error}",
+                parent.display()
+            )
+        })?;
+        restrict_openclaw_backup_permissions(parent, true)?;
+        std::fs::copy(file, &destination).map_err(|error| {
+            format!(
+                "copying OpenClaw configuration {} to {}: {error}",
+                file.display(),
+                destination.display()
+            )
+        })?;
+        restrict_openclaw_backup_permissions(&destination, false)?;
+    }
+
+    Ok(OpenClawConfigBackup {
+        path: snapshot.display().to_string(),
+        files: files.len(),
+    })
+}
+
+fn collect_openclaw_config_files(
+    config_file: &FilePath,
+    config_root: &FilePath,
+) -> Result<Vec<PathBuf>, String> {
+    let mut pending = vec![config_file.to_path_buf()];
+    let mut files = Vec::new();
+    let mut seen = HashSet::new();
+    while let Some(file) = pending.pop() {
+        let file = file.canonicalize().map_err(|error| {
+            format!(
+                "resolving included OpenClaw config {}: {error}",
+                file.display()
+            )
+        })?;
+        if !file.starts_with(config_root) {
+            return Err(format!(
+                "OpenClaw configuration include {} is outside {}",
+                file.display(),
+                config_root.display()
+            ));
+        }
+        if !seen.insert(file.clone()) {
+            continue;
+        }
+        regular_file(&file, "OpenClaw configuration include")?;
+        let content = std::fs::read_to_string(&file).map_err(|error| {
+            format!("reading OpenClaw configuration {}: {error}", file.display())
+        })?;
+        for include in openclaw_config_includes(&content) {
+            let include = PathBuf::from(include);
+            if include.is_absolute() {
+                return Err("OpenClaw configuration includes must be relative to the active configuration directory".to_owned());
+            }
+            let path = file.parent().unwrap_or(config_root).join(include);
+            let path = path.canonicalize().map_err(|error| {
+                format!(
+                    "resolving OpenClaw configuration include from {}: {error}",
+                    file.display()
+                )
+            })?;
+            if !path.starts_with(config_root) {
+                return Err(format!(
+                    "OpenClaw configuration include {} is outside {}",
+                    path.display(),
+                    config_root.display()
+                ));
+            }
+            pending.push(path);
+        }
+        files.push(file);
+    }
+    Ok(files)
+}
+
+fn openclaw_config_includes(config: &str) -> Vec<String> {
+    let mut includes = Vec::new();
+    let mut remainder = config;
+    while let Some(position) = remainder.find("$include") {
+        let after_key = &remainder[position + "$include".len()..];
+        if !openclaw_include_key_prefix(&remainder[..position]) {
+            remainder = after_key;
+            continue;
+        }
+        let after_key = after_key.trim_start();
+        let after_key = if let Some(quote) = after_key
+            .chars()
+            .next()
+            .filter(|value| matches!(value, '\'' | '"'))
+        {
+            &after_key[quote.len_utf8()..]
+        } else {
+            after_key
+        };
+        let Some(value) = after_key.trim_start().strip_prefix(':') else {
+            remainder = after_key;
+            continue;
+        };
+        let value = value.trim_start();
+        let Some(quote) = value
+            .chars()
+            .next()
+            .filter(|value| matches!(value, '\'' | '"'))
+        else {
+            continue;
+        };
+        let mut escaped = false;
+        let mut end = None;
+        for (index, character) in value[quote.len_utf8()..].char_indices() {
+            if escaped {
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == quote {
+                end = Some(quote.len_utf8() + index);
+                break;
+            }
+        }
+        let Some(end) = end else {
+            continue;
+        };
+        includes.push(
+            value[quote.len_utf8()..end]
+                .replace("\\\"", "\"")
+                .replace("\\'", "'"),
+        );
+        remainder = &value[end + quote.len_utf8()..];
+    }
+    includes
+}
+
+fn openclaw_include_key_prefix(prefix: &str) -> bool {
+    let prefix = prefix.trim_end();
+    let prefix = if prefix.ends_with('\'') || prefix.ends_with('"') {
+        prefix[..prefix.len() - 1].trim_end()
+    } else {
+        prefix
+    };
+    prefix.ends_with('{') || prefix.ends_with(',')
+}
+
+fn regular_file(path: &FilePath, label: &str) -> Result<(), String> {
+    let metadata = std::fs::symlink_metadata(path)
+        .map_err(|error| format!("reading {label} {}: {error}", path.display()))?;
+    if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
+        return Err(format!("{label} {} must be a regular file", path.display()));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn restrict_openclaw_backup_permissions(path: &FilePath, directory: bool) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mode = if directory { 0o700 } else { 0o600 };
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).map_err(|error| {
+        format!(
+            "restricting backup permissions for {}: {error}",
+            path.display()
+        )
+    })
+}
+
+#[cfg(not(unix))]
+fn restrict_openclaw_backup_permissions(_path: &FilePath, _directory: bool) -> Result<(), String> {
+    Ok(())
+}
+
 async fn install_openclaw_connector(
     gateway_url: &str,
     haco_url: &str,
@@ -2491,19 +2804,30 @@ async fn install_openclaw_connector(
     hook_token: &str,
     agent_ids: &[String],
     principal_map: &HashMap<String, String>,
-) -> Result<(), String> {
+) -> Result<OpenClawConfigBackup, OpenClawConnectorInstallError> {
+    let config_backup = backup_openclaw_config()
+        .await
+        .map_err(OpenClawConnectorInstallError::before_backup)?;
     let plugin_dir =
         std::env::temp_dir().join(format!("haco-openclaw-connector-{}", Uuid::new_v4()));
-    std::fs::create_dir_all(&plugin_dir).map_err(|error| error.to_string())?;
-    std::fs::write(plugin_dir.join("package.json"), OPENCLAW_CONNECTOR_PACKAGE)
-        .map_err(|error| error.to_string())?;
+    std::fs::create_dir_all(&plugin_dir).map_err(|error| {
+        OpenClawConnectorInstallError::after_backup(error.to_string(), config_backup.clone())
+    })?;
+    std::fs::write(plugin_dir.join("package.json"), OPENCLAW_CONNECTOR_PACKAGE).map_err(
+        |error| {
+            OpenClawConnectorInstallError::after_backup(error.to_string(), config_backup.clone())
+        },
+    )?;
     std::fs::write(
         plugin_dir.join("openclaw.plugin.json"),
         OPENCLAW_CONNECTOR_MANIFEST,
     )
-    .map_err(|error| error.to_string())?;
-    std::fs::write(plugin_dir.join("index.mjs"), OPENCLAW_CONNECTOR_MODULE)
-        .map_err(|error| error.to_string())?;
+    .map_err(|error| {
+        OpenClawConnectorInstallError::after_backup(error.to_string(), config_backup.clone())
+    })?;
+    std::fs::write(plugin_dir.join("index.mjs"), OPENCLAW_CONNECTOR_MODULE).map_err(|error| {
+        OpenClawConnectorInstallError::after_backup(error.to_string(), config_backup.clone())
+    })?;
 
     let list = run_openclaw_command(&["plugins", "list", "--json"])
         .await
@@ -2519,10 +2843,16 @@ async fn install_openclaw_connector(
         .await
     };
     let _ = std::fs::remove_dir_all(&plugin_dir);
-    install_result?;
+    install_result.map_err(|error| {
+        OpenClawConnectorInstallError::after_backup(error, config_backup.clone())
+    })?;
 
-    let allowed_agents = serde_json::to_string(agent_ids).map_err(|error| error.to_string())?;
-    let map_json = serde_json::to_string(principal_map).map_err(|error| error.to_string())?;
+    let allowed_agents = serde_json::to_string(agent_ids).map_err(|error| {
+        OpenClawConnectorInstallError::after_backup(error.to_string(), config_backup.clone())
+    })?;
+    let map_json = serde_json::to_string(principal_map).map_err(|error| {
+        OpenClawConnectorInstallError::after_backup(error.to_string(), config_backup.clone())
+    })?;
     let settings = [
         ("hooks.enabled", "true".to_owned()),
         ("hooks.token", hook_token.to_owned()),
@@ -2554,18 +2884,31 @@ async fn install_openclaw_connector(
     for (path, value) in settings {
         run_openclaw_owned(vec!["config".into(), "set".into(), path.into(), value])
             .await
-            .map_err(|error| format!("setting {path}: {error}"))?;
+            .map_err(|error| {
+                OpenClawConnectorInstallError::after_backup(
+                    format!("setting {path}: {error}"),
+                    config_backup.clone(),
+                )
+            })?;
     }
     run_openclaw_command(&["gateway", "restart"])
         .await
-        .map_err(|error| format!("restarting the OpenClaw Gateway: {error}"))?;
+        .map_err(|error| {
+            OpenClawConnectorInstallError::after_backup(
+                format!("restarting the OpenClaw Gateway: {error}"),
+                config_backup.clone(),
+            )
+        })?;
     for _ in 0..15 {
         if openclaw_gateway_reachable(gateway_url).await {
-            return Ok(());
+            return Ok(config_backup);
         }
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
-    Err("OpenClaw configuration was saved, but the Gateway did not become reachable within 15 seconds".to_owned())
+    Err(OpenClawConnectorInstallError::after_backup(
+        "OpenClaw configuration was saved, but the Gateway did not become reachable within 15 seconds",
+        config_backup,
+    ))
 }
 
 const OPENCLAW_CONNECTOR_PACKAGE: &str = r#"{
@@ -6792,6 +7135,59 @@ mod tests {
         assert!(validate_local_openclaw_url("http://localhost:18789").is_ok());
         assert!(validate_local_openclaw_url("https://openclaw.example.com").is_err());
         assert!(validate_local_openclaw_url("file:///tmp/openclaw").is_err());
+    }
+
+    #[test]
+    fn openclaw_config_backup_copies_active_config_and_includes() {
+        let root = std::env::temp_dir().join(format!("haco-openclaw-backup-{}", Uuid::new_v4()));
+        let config_directory = root.join("openclaw");
+        let backup_directory = root.join("backups");
+        std::fs::create_dir_all(config_directory.join("nested")).unwrap();
+        let config_file = config_directory.join("openclaw.json");
+        std::fs::write(
+            &config_file,
+            r#"{
+  plugins: { $include: "./plugins.json5" },
+  hooks: { $include: "./nested/hooks.json5" }
+}"#,
+        )
+        .unwrap();
+        std::fs::write(config_directory.join("plugins.json5"), "{ entries: {} }").unwrap();
+        std::fs::write(
+            config_directory.join("nested/hooks.json5"),
+            "{ enabled: false }",
+        )
+        .unwrap();
+
+        let backup = create_openclaw_config_backup(&config_file, &backup_directory).unwrap();
+        let snapshot = PathBuf::from(&backup.path);
+        assert_eq!(backup.files, 3);
+        assert_eq!(
+            std::fs::read_to_string(snapshot.join("openclaw.json")).unwrap(),
+            std::fs::read_to_string(&config_file).unwrap()
+        );
+        assert_eq!(
+            std::fs::read_to_string(snapshot.join("plugins.json5")).unwrap(),
+            "{ entries: {} }"
+        );
+        assert_eq!(
+            std::fs::read_to_string(snapshot.join("nested/hooks.json5")).unwrap(),
+            "{ enabled: false }"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn openclaw_config_include_parser_handles_json_and_json5_quotes() {
+        assert_eq!(
+            openclaw_config_includes(
+                r#"{ plugins: { $include: './plugins.json5' }, hooks: { "$include": "nested/hooks.json5" } }"#
+            ),
+            vec!["./plugins.json5", "nested/hooks.json5"]
+        );
+        assert!(
+            openclaw_config_includes(r#"{ note: "literal $include: './not-a-file'" }"#).is_empty()
+        );
     }
 
     #[test]
