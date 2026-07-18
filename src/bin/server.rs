@@ -2584,7 +2584,6 @@ const OPENCLAW_CONNECTOR_MANIFEST: &str = r#"{
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
-    "required": ["hacoUrl", "token", "principalMap"],
     "properties": {
       "hacoUrl": { "type": "string" },
       "token": { "type": "string" },
@@ -6843,5 +6842,22 @@ mod tests {
         assert_eq!(route["conversation_id"], "channel-general");
         assert_eq!(route["parent_message_id"], "message-123");
         assert!(!key.contains("message-123"));
+    }
+
+    #[test]
+    fn openclaw_connector_allows_staged_configuration_during_installation() {
+        let embedded: serde_json::Value =
+            serde_json::from_str(OPENCLAW_CONNECTOR_MANIFEST).unwrap();
+        let packaged: serde_json::Value = serde_json::from_str(include_str!(
+            "../../integrations/openclaw-connector/openclaw.plugin.json"
+        ))
+        .unwrap();
+        for manifest in [embedded, packaged] {
+            let schema = &manifest["configSchema"];
+            assert!(schema.get("required").is_none());
+            assert!(schema["properties"].get("hacoUrl").is_some());
+            assert!(schema["properties"].get("token").is_some());
+            assert!(schema["properties"].get("principalMap").is_some());
+        }
     }
 }

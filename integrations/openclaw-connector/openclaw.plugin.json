@@ -6,7 +6,6 @@
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
-    "required": ["hacoUrl", "token", "principalMap"],
     "properties": {
       "hacoUrl": { "type": "string" },
       "token": { "type": "string" },
