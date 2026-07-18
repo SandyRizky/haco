@@ -2568,17 +2568,43 @@ async fn backup_openclaw_config() -> Result<OpenClawConfigBackup, String> {
 }
 
 fn active_openclaw_config_file(output: &str) -> Result<PathBuf, String> {
-    let path = output.trim();
-    if path.is_empty() || path.lines().count() != 1 {
-        return Err("OpenClaw did not return one active configuration file path".to_owned());
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    active_openclaw_config_file_with_home(output, home.as_deref())
+}
+
+fn active_openclaw_config_file_with_home(
+    output: &str,
+    home: Option<&FilePath>,
+) -> Result<PathBuf, String> {
+    let mut candidates = Vec::new();
+
+    for line in output.lines().map(str::trim) {
+        let path = if let Some(relative) = line.strip_prefix("~/") {
+            let home = home.ok_or_else(|| {
+                "OpenClaw returned a home-relative configuration file path, but Haco does not know its service home directory".to_owned()
+            })?;
+            home.join(relative)
+        } else if line.starts_with('/') {
+            PathBuf::from(line)
+        } else {
+            continue;
+        };
+
+        if regular_file(&path, "active OpenClaw configuration").is_ok() {
+            let path = path
+                .canonicalize()
+                .map_err(|error| format!("resolving {}: {error}", path.display()))?;
+            if !candidates.contains(&path) {
+                candidates.push(path);
+            }
+        }
     }
-    let path = PathBuf::from(path);
-    if !path.is_absolute() {
-        return Err("OpenClaw returned a relative configuration file path; refusing to change configuration without a backup".to_owned());
+
+    match candidates.as_slice() {
+        [path] => Ok(path.clone()),
+        [] => Err("OpenClaw did not return an existing active configuration file path".to_owned()),
+        _ => Err("OpenClaw returned multiple active configuration file paths; refusing to change configuration without an unambiguous backup target".to_owned()),
     }
-    regular_file(&path, "active OpenClaw configuration")?;
-    path.canonicalize()
-        .map_err(|error| format!("resolving {}: {error}", path.display()))
 }
 
 fn create_openclaw_config_backup(
@@ -7135,6 +7161,24 @@ mod tests {
         assert!(validate_local_openclaw_url("http://localhost:18789").is_ok());
         assert!(validate_local_openclaw_url("https://openclaw.example.com").is_err());
         assert!(validate_local_openclaw_url("file:///tmp/openclaw").is_err());
+    }
+
+    #[test]
+    fn openclaw_config_path_accepts_banner_and_home_shorthand() {
+        let root = std::env::temp_dir().join(format!("haco-openclaw-config-{}", Uuid::new_v4()));
+        let config_directory = root.join(".openclaw");
+        std::fs::create_dir_all(&config_directory).unwrap();
+        let config_file = config_directory.join("openclaw.json");
+        std::fs::write(&config_file, "{}").unwrap();
+
+        let output =
+            "Config warnings:\n- plugin warning\n\nOpenClaw 2026.5.7\n~/.openclaw/openclaw.json\n";
+        assert_eq!(
+            active_openclaw_config_file_with_home(output, Some(&root)).unwrap(),
+            config_file.canonicalize().unwrap()
+        );
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
