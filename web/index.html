@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#171717" />
+    <title>Haco</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <div class="ambient ambient-one"></div>
+    <div class="ambient ambient-two"></div>
+    <div id="mobile-backdrop" class="mobile-backdrop" hidden></div>
+    <div id="auth-overlay" class="auth-overlay">
+      <section class="auth-card glass-panel" aria-labelledby="auth-title">
+        <div class="auth-brand"><span class="brand-mark">H</span><span>haco</span></div>
+        <div class="auth-copy"><p id="auth-eyebrow" class="eyebrow">Secure workspace</p><h1 id="auth-title">Sign in to Haco</h1><p id="auth-description">Continue to your conversations with people and agents.</p></div>
+        <form id="login-form" class="auth-form">
+          <label class="settings-field"><span>Email or username</span><input name="login" autocomplete="username" required /></label>
+          <label class="settings-field"><span>Password</span><input name="password" type="password" autocomplete="current-password" required /></label>
+          <button class="primary-button" type="submit">Sign in</button>
+        </form>
+        <form id="setup-form" class="auth-form" hidden>
+          <div class="auth-field-grid"><label class="settings-field"><span>Your name</span><input name="display_name" autocomplete="name" required /></label><label class="settings-field"><span>Username</span><input name="username" autocomplete="username" pattern="[A-Za-z0-9_-]+" required /></label></div>
+          <label class="settings-field"><span>Admin email</span><input name="email" type="email" autocomplete="email" required /></label>
+          <label class="settings-field"><span>Admin password</span><small>Use at least 12 characters.</small><input name="password" type="password" minlength="12" maxlength="128" autocomplete="new-password" required /></label>
+          <button class="primary-button" type="submit">Create administrator</button>
+        </form>
+        <form id="register-form" class="auth-form" hidden>
+          <div class="auth-field-grid"><label class="settings-field"><span>Your name</span><input name="display_name" autocomplete="name" required /></label><label class="settings-field"><span>Username</span><input name="username" autocomplete="username" pattern="[A-Za-z0-9_-]+" required /></label></div>
+          <label class="settings-field"><span>Email</span><input name="email" type="email" autocomplete="email" required /></label>
+          <label class="settings-field"><span>Password</span><small>Use at least 12 characters.</small><input name="password" type="password" minlength="12" maxlength="128" autocomplete="new-password" required /></label>
+          <button class="primary-button" type="submit">Create account</button>
+        </form>
+        <form id="reset-form" class="auth-form" hidden>
+          <label class="settings-field"><span>Reset token</span><input name="token" autocomplete="off" required /></label>
+          <label class="settings-field"><span>New password</span><input name="new_password" type="password" minlength="12" maxlength="128" autocomplete="new-password" required /></label>
+          <button class="primary-button" type="submit">Reset password</button>
+        </form>
+        <form id="invite-form" class="auth-form" hidden>
+          <label class="settings-field"><span>Invite token</span><input name="token" autocomplete="off" required /></label>
+          <div class="auth-field-grid"><label class="settings-field"><span>Your name</span><input name="display_name" required /></label><label class="settings-field"><span>Username</span><input name="username" pattern="[A-Za-z0-9_-]+" required /></label></div>
+          <label class="settings-field"><span>Email</span><input name="email" type="email" required /></label>
+          <label class="settings-field"><span>Password</span><input name="password" type="password" minlength="12" maxlength="128" required /></label>
+          <button class="primary-button" type="submit">Accept invitation</button>
+        </form>
+        <button id="mock-admin-login" class="mock-login-button" type="button" hidden><span>Testing only</span>Log in as administrator</button>
+        <p id="auth-error" class="settings-error" hidden></p>
+        <footer id="auth-links" class="auth-links"><button type="button" data-auth-mode="register">Create account</button><button type="button" data-auth-mode="invite">Use invitation</button><button type="button" data-auth-mode="reset">Use reset token</button><button type="button" data-auth-mode="login" hidden>Back to sign in</button></footer>
+      </section>
+    </div>
+    <main class="app-shell glass-frame">
+      <aside id="sidebar" class="sidebar glass-panel">
+        <header class="sidebar-header">
+          <div class="brand"><span class="brand-mark">H</span><span>haco</span></div>
+          <button id="close-sidebar" class="icon-button mobile-only" type="button" aria-label="Close conversations">×</button>
+        </header>
+        <section class="workspace-card">
+          <div class="workspace-icon">◈</div>
+          <div><strong>Haco workspace</strong><p>People + agents</p></div>
+          <span class="workspace-chevron">⌄</span>
+        </section>
+        <label class="search-box"><span class="search-icon">⌕</span><input id="search" type="search" placeholder="Search messages" autocomplete="off" /><kbd>⌘ K</kbd></label>
+        <div class="filter-tabs" aria-label="Conversation filters">
+          <button class="filter active" type="button" data-filter="all">All</button>
+          <button class="filter" type="button" data-filter="channel">Channels</button>
+          <button class="filter" type="button" data-filter="direct">Direct</button>
+        </div>
+        <div class="conversation-heading"><p class="section-label">Conversations</p><span><span id="conversation-count"></span><button id="new-conversation" class="mini-add" type="button" aria-label="New conversation">＋</button></span></div>
+        <nav id="conversations" class="conversation-list" aria-label="Conversations"></nav>
+        <footer class="profile-card">
+          <div id="profile-avatar" class="profile-avatar">A</div>
+          <div class="profile-copy"><strong id="profile-name">Account</strong><span><i id="connection-dot" class="dot"></i><span id="connection-status">Connecting</span></span></div>
+          <button id="open-settings" class="icon-button" type="button" aria-label="Open admin settings" title="Admin settings">⚙</button>
+        </footer>
+      </aside>
+      <section class="chat-panel glass-panel">
+        <header class="chat-header">
+          <button id="open-sidebar" class="icon-button mobile-only" type="button" aria-label="Open conversations">☰</button>
+          <div class="chat-title"><div class="channel-symbol" id="channel-symbol">#</div><div><p id="conversation-kind" class="eyebrow"></p><h1 id="conversation-title">Loading Haco…</h1><p id="conversation-description"></p></div></div>
+          <div class="header-actions"><button id="notifications-button" class="icon-button notification-button" type="button" aria-label="Notifications" title="Notifications">◔<b id="notification-count" hidden></b></button><button id="manage-conversation" class="icon-button" type="button" aria-label="Manage conversation" title="Manage conversation" hidden>⚙</button><span class="live-badge"><i class="dot online"></i> Live</span><span class="secure-badge">Self-hosted</span></div>
+        </header>
+        <section id="notifications-panel" class="notifications-panel glass-panel" hidden><header><div><span class="eyebrow">Inbox</span><strong>Notifications</strong></div><button id="close-notifications" class="icon-button" type="button">×</button></header><div id="notification-list"></div><footer class="push-controls"><span id="push-status">Browser notifications are off</span><div><button id="push-toggle" class="secondary-button" type="button">Enable</button><button id="push-test" class="settings-inline-button" type="button" hidden>Test</button></div></footer></section>
+        <section id="search-results" class="search-results glass-panel" hidden><header><div><span class="eyebrow">Workspace search</span><strong id="search-summary">Results</strong></div><button id="close-search" class="icon-button" type="button" aria-label="Close search">×</button></header><div class="search-filters"><select id="search-conversation"><option value="">All conversations</option></select><select id="search-sender"><option value="">Anyone</option></select><select id="search-media"><option value="">Any content</option><option value="image/">Images</option><option value="video/">Videos</option><option value="audio/">Audio</option><option value="application/">Files</option></select></div><div id="search-result-list"></div></section>
+        <section class="feed-shell"><div class="date-divider"><span>Today</span></div><button id="load-older" class="load-older" type="button" hidden>Load older messages</button><section id="messages" class="message-feed" aria-live="polite"></section></section>
+        <section class="composer-shell"><p id="typing-indicator" class="typing-indicator" hidden></p>
+          <section id="reply-state" class="reply-state" hidden><div><span>Replying to</span><strong id="reply-copy"></strong></div><button id="cancel-reply" class="icon-button" type="button" aria-label="Cancel reply">×</button></section>
+          <form id="composer" class="composer glass-panel">
+            <button id="attachment-button" class="composer-action" type="button" aria-label="Add attachment" title="Add files">＋</button><input id="attachment-input" type="file" multiple hidden />
+            <textarea id="message-input" rows="1" placeholder="Write a message…" aria-label="Message"></textarea>
+            <div class="composer-tools"><span>Shift + Enter for a new line</span><button id="send-button" type="submit" aria-label="Send message">↑</button></div>
+          </form>
+          <div id="mention-suggestions" class="mention-suggestions glass-panel" hidden></div>
+          <div id="pending-attachments" class="pending-attachments" hidden></div>
+        </section>
+      </section>
+      <aside id="thread-panel" class="thread-panel glass-panel" hidden>
+        <header class="thread-header">
+          <div><p class="eyebrow">Channel thread</p><h2>Replies</h2></div><button id="thread-subscribe" class="subscribe-button" type="button">Follow</button>
+          <button id="close-thread" class="icon-button" type="button" aria-label="Close thread">×</button>
+        </header>
+        <section id="thread-root" class="thread-root"></section>
+        <div class="thread-divider"><span id="thread-count">0 replies</span></div>
+        <section id="thread-messages" class="thread-feed" aria-live="polite"></section>
+        <form id="thread-composer" class="thread-composer glass-panel">
+          <textarea id="thread-input" rows="1" placeholder="Reply to thread…" aria-label="Thread reply"></textarea>
+          <button type="submit" aria-label="Send thread reply">↑</button>
+        </form>
+      </aside>
+    </main>
+    <div id="settings-overlay" class="settings-overlay" hidden>
+      <section class="settings-dialog glass-panel" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+        <header class="settings-header"><div><p class="eyebrow">Workspace administration</p><h2 id="settings-title">Settings</h2></div><div class="settings-header-actions"><span id="settings-save-status" class="settings-save-status"></span><button id="close-settings" class="icon-button" type="button" aria-label="Close settings">×</button></div></header>
+        <div id="settings-unlock" class="settings-unlock">
+          <div class="settings-lock-icon">⌁</div><p class="eyebrow">Admin access</p><h3>Unlock workspace settings</h3>
+          <p>Enter the admin token configured on this Haco server. It stays in memory only and is forgotten when this page closes.</p>
+          <form id="settings-unlock-form"><label class="settings-field"><span>Admin token</span><input id="admin-token" type="password" autocomplete="off" placeholder="HACO_ADMIN_TOKEN" required /></label><p id="settings-unlock-error" class="settings-error" hidden></p><button class="primary-button" type="submit">Unlock settings</button></form>
+        </div>
+        <div id="settings-workspace" class="settings-layout" hidden>
+          <nav class="settings-nav" aria-label="Settings sections">
+            <button class="settings-nav-item active" type="button" data-settings-tab="workspace"><span>◇</span><span><strong>Workspace</strong><small>Identity and behavior</small></span></button>
+            <button class="settings-nav-item" type="button" data-settings-tab="people"><span>◎</span><span><strong>People & access</strong><small>Humans and agents</small></span></button>
+            <button class="settings-nav-item" type="button" data-settings-tab="integrations"><span>⌁</span><span><strong>Integrations</strong><small>OpenClaw and APIs</small></span></button>
+            <button class="settings-nav-item" type="button" data-settings-tab="security"><span>▣</span><span><strong>Security & storage</strong><small>Uploads and retention</small></span></button>
+            <button class="settings-nav-item" type="button" data-settings-tab="system"><span>◌</span><span><strong>System</strong><small>Server information</small></span></button>
+            <button id="settings-lock" class="settings-lock-button" type="button">Lock settings</button>
+          </nav>
+          <form id="settings-form" class="settings-content">
+            <section class="settings-page active" data-settings-page="workspace">
+              <div class="settings-page-heading"><p class="eyebrow">General</p><h3>Workspace</h3><p>How this Haco installation appears and behaves for everyone.</p></div>
+              <div class="settings-card"><label class="settings-field"><span>Workspace name</span><small>Shown in the sidebar and page title.</small><input name="workspace_name" maxlength="80" required /></label><label class="settings-field"><span>Public URL</span><small>The HTTPS address people and agents use to reach Haco.</small><input name="public_url" type="url" placeholder="https://haco.example.com" /></label></div>
+              <div class="settings-card settings-toggle-list"><label class="settings-toggle"><span><strong>Allow new registrations</strong><small>Let people create accounts without an invitation.</small></span><input name="registration_enabled" type="checkbox" /><i></i></label><label class="settings-toggle"><span><strong>URL previews</strong><small>Generate link cards when messages contain a URL.</small></span><input name="url_previews_enabled" type="checkbox" /><i></i></label></div>
+            </section>
+            <section class="settings-page" data-settings-page="people">
+              <div class="settings-page-heading"><p class="eyebrow">Directory</p><h3>People & agents</h3><p>Principals currently registered with this workspace.</p></div>
+              <div class="settings-summary-grid"><div><strong id="human-count">0</strong><span>Humans</span></div><div><strong id="agent-count">0</strong><span>Agents</span></div></div><div class="settings-toolbar"><button id="create-human" class="primary-button" type="button">Add person</button><button id="create-agent" class="secondary-button" type="button">Add agent</button><button id="create-invite" class="secondary-button" type="button">Create invitation</button></div><div id="settings-users" class="settings-card settings-users"></div>
+              <p class="settings-help">Account creation and role editing will use this directory in the next access-management milestone.</p>
+            </section>
+            <section class="settings-page" data-settings-page="integrations">
+              <div class="settings-page-heading"><p class="eyebrow">Connections</p><h3>Integrations</h3><p>Connect agent runtimes and external automation to Haco.</p></div>
+              <div class="integration-card"><div class="integration-heading"><span class="integration-logo">O</span><div><strong>OpenClaw</strong><small>Receive messages and activity from an OpenClaw agent.</small></div><label class="settings-toggle compact"><input name="openclaw_enabled" type="checkbox" /><i></i></label></div><div class="settings-field-grid"><label class="settings-field"><span>Gateway URL</span><input name="openclaw_gateway_url" type="url" placeholder="http://127.0.0.1:18789" /></label><label class="settings-field"><span>Agent ID</span><input name="openclaw_agent_id" placeholder="agent-atlas" /></label></div><label class="settings-field"><span>Integration token <b id="openclaw-token-state" class="secret-state"></b></span><small>Leave empty to keep the current token. Enter a new value to rotate it.</small><input name="openclaw_token" type="password" autocomplete="new-password" placeholder="Keep current token" /></label><div class="endpoint-row"><code id="openclaw-endpoint"></code><button class="copy-endpoint" type="button" data-copy-target="openclaw-endpoint">Copy</button></div></div>
+              <div class="integration-card"><div class="integration-heading"><span class="integration-logo agent-logo">A</span><div><strong>Agent API</strong><small>Runtime-neutral inbound endpoint using the same integration token.</small></div><label class="settings-toggle compact"><input name="agent_api_enabled" type="checkbox" /><i></i></label></div><div class="endpoint-row"><code id="agent-api-endpoint"></code><button class="copy-endpoint" type="button" data-copy-target="agent-api-endpoint">Copy</button></div></div>
+              <div class="integration-card"><div class="integration-heading"><span class="integration-logo webhook-logo">↗</span><div><strong>Outgoing webhooks</strong><small>Signed event delivery with automatic retries.</small></div><label class="settings-toggle compact"><input name="webhooks_enabled" type="checkbox" /><i></i></label></div><label class="settings-field"><span>Destination URL</span><input name="webhook_url" type="url" placeholder="https://automation.example.com/haco" /></label><label class="settings-field"><span>Signing secret <b id="webhook-secret-state" class="secret-state"></b></span><small>Leave empty to keep the current secret. Existing pre-Phase-4 secrets must be rotated once.</small><input name="webhook_secret" type="password" autocomplete="new-password" placeholder="Keep current secret" /></label><div class="settings-toolbar"><button id="test-webhook" class="secondary-button" type="button">Send test event</button><button id="refresh-webhooks" class="secondary-button" type="button">Refresh history</button></div><div id="webhook-deliveries" class="webhook-deliveries"><p class="settings-help">No delivery attempts loaded.</p></div></div>
+            </section>
+            <section class="settings-page" data-settings-page="security">
+              <div class="settings-page-heading"><p class="eyebrow">Data controls</p><h3>Security & storage</h3><p>Set server-wide limits for files and retained chat history.</p></div>
+              <div class="settings-card settings-field-grid"><label class="settings-field"><span>Maximum upload size</span><small>Per attachment, in megabytes.</small><div class="input-suffix"><input name="max_upload_mb" type="number" min="1" max="1024" required /><span>MB</span></div></label><label class="settings-field"><span>Message retention</span><small>Use 0 to keep history indefinitely.</small><div class="input-suffix"><input name="data_retention_days" type="number" min="0" max="36500" required /><span>days</span></div></label><label class="settings-field"><span>Agent reasoning retention</span><small>Explicit agent reasoning traces are removed automatically; minimum 7 days.</small><div class="input-suffix"><input name="reasoning_retention_days" type="number" min="7" max="3650" required /><span>days</span></div></label></div>
+              <div class="settings-card security-note"><strong>Lifecycle jobs run automatically</strong><p>Expired sessions and stale unclaimed uploads are cleaned hourly. Message retention removes expired messages and their stored attachments.</p><button id="run-retention" class="secondary-button" type="button">Run cleanup now</button><small id="retention-status"></small></div>
+            </section>
+            <section class="settings-page" data-settings-page="system">
+              <div class="settings-page-heading"><p class="eyebrow">Instance</p><h3>System</h3><p>Useful details for operating this self-hosted server.</p></div>
+              <div class="system-status"><span><i class="dot online"></i> Server online</span><strong>Haco</strong><small id="system-origin"></small></div>
+              <div class="settings-card system-list"><div><span>Health endpoint</span><code>/health</code></div><div><span>Database</span><strong>SQLite</strong></div><div><span>Realtime transport</span><strong>WebSocket</strong></div><div><span>Admin authentication</span><strong>Session + role</strong></div></div>
+              <div class="settings-card"><div class="settings-page-heading"><strong>Change your password</strong><p>Your other signed-in sessions will be closed.</p></div><div class="settings-field-grid"><label class="settings-field"><span>Current password</span><input id="current-password" type="password" autocomplete="current-password" /></label><label class="settings-field"><span>New password</span><input id="new-password" type="password" minlength="12" maxlength="128" autocomplete="new-password" /></label></div><button id="change-password-button" class="primary-button" type="button">Change password</button></div>
+              <button id="logout-button" class="danger-button" type="button">Sign out of Haco</button>
+            </section>
+            <footer class="settings-footer"><p id="settings-form-error" class="settings-error" hidden></p><button id="save-settings" class="primary-button" type="submit">Save changes</button></footer>
+          </form>
+        </div>
+      </section>
+    </div>
+    <div id="workspace-modal" class="workspace-modal" hidden><section class="workspace-modal-card glass-panel" role="dialog" aria-modal="true" aria-labelledby="workspace-modal-title"><header><div><p class="eyebrow">Workspace action</p><h2 id="workspace-modal-title"></h2></div><button id="close-workspace-modal" class="icon-button" type="button">×</button></header><form id="workspace-modal-form"><div id="workspace-modal-body"></div><p id="workspace-modal-error" class="settings-error" hidden></p><footer><button id="workspace-modal-cancel" class="secondary-button" type="button">Cancel</button><button id="workspace-modal-submit" class="primary-button" type="submit">Save</button></footer></form></section></div>
+    <div id="media-viewer" class="media-viewer" hidden><button id="close-media-viewer" class="icon-button" type="button">×</button><div id="media-viewer-content"></div></div>
+    <template id="conversation-template">
+      <button class="conversation" type="button"><span class="conversation-icon"></span><span class="conversation-copy"><strong></strong><small></small></span><span class="unread-badge" hidden></span></button>
+    </template>
+    <template id="message-template">
+      <article class="message"><div class="avatar"></div><div class="message-content"><div class="message-meta"><strong></strong><span class="principal-kind"></span><span class="pinned-label" hidden>◆ pinned</span><button class="reply-button" type="button">↩ Reply</button></div><div class="message-bubble"><p class="message-body"></p><div class="activity" hidden><div class="activity-heading"><span class="activity-pulse"></span><span class="activity-title"></span></div><p></p></div><details class="reasoning-trace" hidden><summary><span>Reasoning trace</span><small>Agent-provided · click to expand</small></summary><pre></pre><small></small></details><div class="attachments"></div><a class="url-preview" target="_blank" rel="noopener noreferrer" hidden><img alt="" loading="lazy" hidden><span class="url-preview-copy"><strong></strong><span></span><small></small></span></a></div><div class="reaction-row"></div><div class="message-footer"><time></time><span class="edited-label" hidden>edited</span><button class="message-action react-message" type="button">React</button><button class="message-action pin-message" type="button">Pin</button><button class="message-action save-message" type="button">Save</button><button class="message-action edit-message" type="button">Edit</button><button class="message-action delete-message" type="button">Delete</button><button class="thread-button" type="button" hidden></button></div></div></article>
+    </template>
+    <script src="/app.js" defer></script>
+  </body>
+</html>

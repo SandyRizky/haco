@@ -1,0 +1,38 @@
+[package]
+name = "haco"
+version = "0.1.0"
+edition = "2021"
+description = "A lightweight self-hosted communication hub for people and AI agents"
+autobins = false
+
+[lib]
+name = "haco"
+path = "src/lib.rs"
+
+[[bin]]
+name = "haco-server"
+path = "src/bin/server.rs"
+
+[dependencies]
+anyhow = "1.0"
+argon2 = "0.5"
+axum = { version = "0.7", features = ["json", "ws", "multipart"] }
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+futures-util = "0.3"
+hmac = "0.12"
+rand = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+rusqlite = { version = "0.31", features = ["bundled"] }
+rust-embed = "8.5"
+web-push-native = "0.4"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"
+thiserror = "1.0"
+tokio = { version = "1.38", features = ["macros", "rt-multi-thread", "net", "sync", "fs"] }
+tower-http = { version = "0.5", features = ["cors", "trace", "limit"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1.9", features = ["v4", "serde"] }
+url = "2.5"
