@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="theme-color" content="#171717" />
+    <meta name="theme-color" content="#060812" />
     <title>Haco</title>
     <link rel="stylesheet" href="/style.css" />
   </head>
@@ -49,7 +49,7 @@
         <footer id="auth-links" class="auth-links"><button type="button" data-auth-mode="register">Create account</button><button type="button" data-auth-mode="invite">Use invitation</button><button type="button" data-auth-mode="reset">Use reset token</button><button type="button" data-auth-mode="login" hidden>Back to sign in</button></footer>
       </section>
     </div>
-    <main class="app-shell glass-frame">
+    <main class="app-shell glass-frame" aria-label="Haco workspace">
       <aside id="sidebar" class="sidebar glass-panel">
         <header class="sidebar-header">
           <div class="brand"><span class="brand-mark">H</span><span>haco</span></div>
@@ -63,7 +63,7 @@
         <label class="search-box"><span class="search-icon">⌕</span><input id="search" type="search" placeholder="Search messages" autocomplete="off" /><kbd>⌘ K</kbd></label>
         <div class="filter-tabs" aria-label="Conversation filters">
           <button class="filter active" type="button" data-filter="all">All</button>
-          <button class="filter" type="button" data-filter="channel">Channels</button>
+          <button class="filter" type="button" data-filter="channel">Forums</button>
           <button class="filter" type="button" data-filter="direct">Direct</button>
         </div>
         <div class="conversation-heading"><p class="section-label">Conversations</p><span><span id="conversation-count"></span><button id="new-conversation" class="mini-add" type="button" aria-label="New conversation">＋</button></span></div>
@@ -74,7 +74,7 @@
           <button id="open-settings" class="icon-button" type="button" aria-label="Open admin settings" title="Admin settings">⚙</button>
         </footer>
       </aside>
-      <section class="chat-panel glass-panel">
+      <section class="chat-panel glass-panel" aria-label="Conversation workspace">
         <header class="chat-header">
           <button id="open-sidebar" class="icon-button mobile-only" type="button" aria-label="Open conversations">☰</button>
           <div class="chat-title"><div class="channel-symbol" id="channel-symbol">#</div><div><p id="conversation-kind" class="eyebrow"></p><h1 id="conversation-title">Loading Haco…</h1><p id="conversation-description"></p></div></div>
@@ -94,17 +94,17 @@
           <div id="pending-attachments" class="pending-attachments" hidden></div>
         </section>
       </section>
-      <aside id="thread-panel" class="thread-panel glass-panel" hidden>
+      <aside id="thread-panel" class="thread-panel glass-panel" aria-label="Forum Thread" hidden>
         <header class="thread-header">
-          <div><p class="eyebrow">Channel thread</p><h2>Replies</h2></div><button id="thread-subscribe" class="subscribe-button" type="button">Follow</button>
+          <div><p class="eyebrow">Forum Thread</p><h2>Replies</h2></div><button id="thread-subscribe" class="subscribe-button" type="button">Follow</button>
           <button id="close-thread" class="icon-button" type="button" aria-label="Close thread">×</button>
         </header>
         <section id="thread-root" class="thread-root"></section>
         <div class="thread-divider"><span id="thread-count">0 replies</span></div>
-        <section id="thread-messages" class="thread-feed" aria-live="polite"></section>
+        <section id="thread-messages" class="thread-feed" aria-label="Forum replies" aria-live="polite"></section>
         <form id="thread-composer" class="thread-composer glass-panel">
-          <textarea id="thread-input" rows="1" placeholder="Reply to thread…" aria-label="Thread reply"></textarea>
-          <button type="submit" aria-label="Send thread reply">↑</button>
+          <textarea id="thread-input" rows="1" placeholder="Reply to Forum Thread…" aria-label="Forum Thread reply"></textarea>
+          <button type="submit" aria-label="Send Forum Thread reply">↑</button>
         </form>
       </aside>
     </main>
@@ -144,7 +144,7 @@
             </section>
             <section class="settings-page" data-settings-page="security">
               <div class="settings-page-heading"><p class="eyebrow">Data controls</p><h3>Security & storage</h3><p>Set server-wide limits for files and retained chat history.</p></div>
-              <div class="settings-card settings-field-grid"><label class="settings-field"><span>Maximum upload size</span><small>Per attachment, in megabytes.</small><div class="input-suffix"><input name="max_upload_mb" type="number" min="1" max="1024" required /><span>MB</span></div></label><label class="settings-field"><span>Message retention</span><small>Use 0 to keep history indefinitely.</small><div class="input-suffix"><input name="data_retention_days" type="number" min="0" max="36500" required /><span>days</span></div></label><label class="settings-field"><span>Agent reasoning retention</span><small>Explicit agent reasoning traces are removed automatically; minimum 7 days.</small><div class="input-suffix"><input name="reasoning_retention_days" type="number" min="7" max="3650" required /><span>days</span></div></label></div>
+              <div class="settings-card settings-field-grid"><label class="settings-field"><span>Maximum upload size</span><small>Per attachment, in megabytes.</small><div class="input-suffix"><input name="max_upload_mb" type="number" min="1" max="1024" required /><span>MB</span></div></label><label class="settings-field"><span>Message retention</span><small>Use 0 to keep history indefinitely.</small><div class="input-suffix"><input name="data_retention_days" type="number" min="0" max="36500" required /><span>days</span></div></label><label class="settings-field"><span>Agent-provided thinking retention</span><small>Explicit agent-provided traces are removed automatically; minimum 7 days.</small><div class="input-suffix"><input name="reasoning_retention_days" type="number" min="7" max="3650" required /><span>days</span></div></label></div>
               <div class="settings-card security-note"><strong>Lifecycle jobs run automatically</strong><p>Expired sessions and stale unclaimed uploads are cleaned hourly. Message retention removes expired messages and their stored attachments.</p><button id="run-retention" class="secondary-button" type="button">Run cleanup now</button><small id="retention-status"></small></div>
             </section>
             <section class="settings-page" data-settings-page="system">
@@ -165,7 +165,7 @@
       <button class="conversation" type="button"><span class="conversation-icon"></span><span class="conversation-copy"><strong></strong><small></small></span><span class="unread-badge" hidden></span></button>
     </template>
     <template id="message-template">
-      <article class="message"><div class="avatar"></div><div class="message-content"><div class="message-meta"><strong></strong><span class="principal-kind"></span><span class="pinned-label" hidden>◆ pinned</span><button class="reply-button" type="button">↩ Reply</button></div><div class="message-bubble"><p class="message-body"></p><div class="activity" hidden><div class="activity-heading"><span class="activity-pulse"></span><span class="activity-title"></span></div><p></p></div><details class="reasoning-trace" hidden><summary><span>Reasoning trace</span><small>Agent-provided · click to expand</small></summary><pre></pre><small></small></details><div class="attachments"></div><a class="url-preview" target="_blank" rel="noopener noreferrer" hidden><img alt="" loading="lazy" hidden><span class="url-preview-copy"><strong></strong><span></span><small></small></span></a></div><div class="reaction-row"></div><div class="message-footer"><time></time><span class="edited-label" hidden>edited</span><button class="message-action react-message" type="button">React</button><button class="message-action pin-message" type="button">Pin</button><button class="message-action save-message" type="button">Save</button><button class="message-action edit-message" type="button">Edit</button><button class="message-action delete-message" type="button">Delete</button><button class="thread-button" type="button" hidden></button></div></div></article>
+      <article class="message"><div class="avatar"></div><div class="message-content"><div class="message-meta"><strong></strong><span class="principal-kind"></span><span class="pinned-label" hidden>◆ pinned</span><button class="reply-button" type="button">↩ Reply</button></div><div class="message-bubble"><p class="message-body"></p><div class="activity" hidden><div class="activity-heading"><span class="activity-pulse"></span><span class="activity-title"></span></div><p></p></div><details class="reasoning-trace" hidden><summary><span>Agent thinking</span><small>Agent-provided · click to expand</small></summary><pre></pre><small></small></details><div class="attachments"></div><a class="url-preview" target="_blank" rel="noopener noreferrer" hidden><img alt="" loading="lazy" hidden><span class="url-preview-copy"><strong></strong><span></span><small></small></span></a></div><div class="reaction-row"></div><div class="message-footer"><time></time><span class="edited-label" hidden>edited</span><button class="message-action react-message" type="button">React</button><button class="message-action pin-message" type="button">Pin</button><button class="message-action save-message" type="button">Save</button><button class="message-action edit-message" type="button">Edit</button><button class="message-action delete-message" type="button">Delete</button><button class="thread-button" type="button" hidden></button></div></div></article>
     </template>
     <script src="/app.js" defer></script>
   </body>

@@ -35,7 +35,7 @@ const dom = {
 };
 
 const iconFor = (kind) => ({ channel: '#', group: '◉', direct: '@' }[kind] || '•');
-const labelFor = (kind) => ({ channel: 'Channel', group: 'Group chat', direct: 'Direct message' }[kind] || 'Conversation');
+const labelFor = (kind) => ({ channel: 'Forum', group: 'Group chat', direct: 'Direct message' }[kind] || 'Conversation');
 const escapeHtml = (value) => value.replace(/[&<>"]/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[character]));
 const currentConversation = () => state.conversations.find((conversation) => conversation.id === state.selected);
 
@@ -402,7 +402,7 @@ const memberChecklist = (selected = []) => `<div class="member-picker">${state.u
 
 async function openNewConversation() {
   if (!state.users.length) state.users = await request('/api/users');
-  openWorkspaceModal('New conversation', `<div class="settings-field-grid"><label class="settings-field"><span>Type</span><select name="kind"><option value="group">Group chat</option><option value="direct">Direct message</option>${state.currentUser?.access_role === 'admin' ? '<option value="channel">Channel</option>' : ''}</select></label><label class="settings-field"><span>Name</span><input name="title" maxlength="80" required /></label></div><label class="settings-field"><span>Topic or description</span><input name="description" /></label><label class="settings-toggle"><span><strong>Private conversation</strong><small>Only selected members can access it.</small></span><input name="is_private" type="checkbox" checked/><i></i></label><div><span class="modal-label">Members</span>${memberChecklist([state.currentUser.id])}</div>`, async (form) => {
+  openWorkspaceModal('New conversation', `<div class="settings-field-grid"><label class="settings-field"><span>Type</span><select name="kind"><option value="group">Group chat</option><option value="direct">Direct message</option>${state.currentUser?.access_role === 'admin' ? '<option value="channel">Forum</option>' : ''}</select></label><label class="settings-field"><span>Name</span><input name="title" maxlength="80" required /></label></div><label class="settings-field"><span>Topic or description</span><input name="description" /></label><label class="settings-toggle"><span><strong>Private conversation</strong><small>Only selected members can access it.</small></span><input name="is_private" type="checkbox" checked/><i></i></label><div><span class="modal-label">Members</span>${memberChecklist([state.currentUser.id])}</div>`, async (form) => {
     const payload = { kind: form.kind.value, title: form.title.value, description: form.description.value || null, is_private: form.is_private.checked, member_ids: [...form.querySelectorAll('[name="member_ids"]:checked')].map((item) => item.value) };
     const conversation = await request('/api/conversations', { method: 'POST', body: JSON.stringify(payload) });
     state.conversations = await request('/api/conversations');
