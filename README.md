@@ -64,7 +64,7 @@ One Rust process serves the API, WebSocket connection, embedded responsive web i
 Haco is under active development. The following are not complete yet:
 
 - File validation blocks known executable signatures and the EICAR marker, but production operators should still add an external antivirus scanner at the storage boundary.
-- There are no official prebuilt GitHub releases or one-command installers yet.
+- The native installer and release binaries currently support Linux x86_64 and ARM64; packaged macOS and Windows installation is still pending.
 - Haco cannot extract a provider's hidden chain-of-thought. It displays and retains only reasoning text explicitly supplied by the agent integration.
 - Browser push requires HTTPS (except browser-defined localhost development exceptions), user permission, and access from the Haco server to the browser vendor's push service.
 
@@ -72,7 +72,60 @@ Haco is under active development. The following are not complete yet:
 
 The formal release-mode gate passed at **32.0 MiB peak RSS** under 2,000 message writes, 200 searches, and 20 concurrent clients—well below the 500 MiB limit. See [docs/performance.md](docs/performance.md) for the measured environment, methodology, caveats, and the reproducible test command.
 
-## Requirements
+## Install on Linux
+
+Haco provides a native Linux installer for x86_64 and ARM64 servers. It installs the verified release binary, creates the data directories, configures systemd, detects a local OpenClaw installation, and starts Haco automatically.
+
+For the safest installation, download and inspect the installer before running it:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/SandyRizky/haco/main/scripts/install-linux.sh -o /tmp/haco-install.sh
+less /tmp/haco-install.sh
+bash /tmp/haco-install.sh
+```
+
+The one-command form is:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/SandyRizky/haco/main/scripts/install-linux.sh | bash
+```
+
+Run it from the same Linux account that owns OpenClaw. The installer uses that account for the Haco service, automatically searches common OpenClaw installation locations, and asks before exposing Haco directly on the public network.
+
+The safe default listens only on `127.0.0.1:8787`. To explicitly make plain HTTP available on the server's public IP for initial testing:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/SandyRizky/haco/main/scripts/install-linux.sh | bash -s -- --public
+```
+
+Direct public-IP mode is not encrypted. Use the local default with Caddy or Nginx and HTTPS for production. After installation, open Haco, create the first administrator, then use **Settings → Integrations → Connect local OpenClaw**.
+
+Useful non-interactive options:
+
+```bash
+# Select the Linux/OpenClaw account explicitly.
+bash /tmp/haco-install.sh --user ubuntu
+
+# Select an OpenClaw executable that is installed through NVM or elsewhere.
+bash /tmp/haco-install.sh --user ubuntu --openclaw-bin /home/ubuntu/.nvm/versions/node/v22.0.0/bin/openclaw
+
+# Rebuild the generated environment configuration instead of preserving it.
+bash /tmp/haco-install.sh --reconfigure
+```
+
+Installed files:
+
+```text
+/usr/local/bin/haco-server
+/etc/haco/haco.env
+/etc/systemd/system/haco.service
+/var/lib/haco/haco.db
+/var/lib/haco/uploads/
+```
+
+Re-running the installer upgrades the executable while preserving `/etc/haco/haco.env`, the database, uploads, and VAPID key. `--reconfigure` creates a timestamped environment-file backup before replacing it.
+
+## Build requirements
 
 - A 64-bit Linux, macOS, or Windows machine
 - Git
@@ -95,12 +148,12 @@ Platform build tools:
 
 SQLite is bundled by the Rust dependency, so a separately installed SQLite server is not required.
 
-## Install from GitHub
+## Build from source
 
-Until official release binaries are published, build Haco from source. Replace the example repository URL with the URL where Haco is hosted.
+Developers and unsupported platforms can build Haco from source:
 
 ```bash
-git clone https://github.com/YOUR_ACCOUNT/haco.git
+git clone https://github.com/SandyRizky/haco.git
 cd haco
 cargo build --release --bin haco-server
 ```
@@ -194,62 +247,17 @@ Never enable `HACO_DEV_MOCK_AUTH` on a public, shared, or production server. Whe
 
 ## Serve on a Linux VPS
 
-For production, keep Haco bound to localhost and place Caddy or Nginx in front of it for HTTPS.
-
-Suggested directory layout:
-
-```text
-/opt/haco/haco-server
-/var/lib/haco/haco.db
-/var/lib/haco/uploads/
-```
-
-Create a dedicated service account and data directory:
+The Linux installer creates and enables `haco.service`. Use standard systemd commands to manage it:
 
 ```bash
-sudo useradd --system --home /var/lib/haco --shell /usr/sbin/nologin haco
-sudo install -d -o haco -g haco -m 750 /var/lib/haco
-sudo install -o root -g root -m 755 target/release/haco-server /opt/haco/haco-server
-```
-
-Create `/etc/systemd/system/haco.service`:
-
-```ini
-[Unit]
-Description=Haco communication server
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=haco
-Group=haco
-WorkingDirectory=/var/lib/haco
-Environment=HACO_BIND=127.0.0.1:8787
-Environment=HACO_DATABASE=/var/lib/haco/haco.db
-Environment=HACO_UPLOAD_DIR=/var/lib/haco/uploads
-Environment=HACO_COOKIE_SECURE=true
-Environment=RUST_LOG=haco_server=info,tower_http=info
-ExecStart=/opt/haco/haco-server
-Restart=on-failure
-RestartSec=3
-NoNewPrivileges=true
-PrivateTmp=true
-ProtectSystem=strict
-ProtectHome=true
-ReadWritePaths=/var/lib/haco
-
-[Install]
-WantedBy=multi-user.target
-```
-
-Start and enable it:
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now haco
 sudo systemctl status haco
+sudo systemctl restart haco
+sudo journalctl -u haco -f
 ```
+
+For local OpenClaw discovery, Haco should run as the same Linux account as OpenClaw. The installer handles this automatically when invoked by that account. If Haco is installed for a different user, rerun it with `--user USER --reconfigure`.
+
+For production, keep Haco bound to localhost and place Caddy or Nginx in front of it for HTTPS. After HTTPS is active, set `HACO_COOKIE_SECURE="true"` in `/etc/haco/haco.env` and restart Haco.
 
 ### Caddy
 
@@ -553,14 +561,10 @@ Haco runs lifecycle cleanup on startup and hourly afterward. It removes expired 
 
 ## Upgrade
 
-Back up the database before every upgrade, then rebuild and replace the executable:
+Back up the database before every upgrade, then rerun the installer. It downloads and verifies the latest GitHub release, replaces only the executable and service definition, preserves data and configuration, and restarts Haco:
 
 ```bash
-git pull --ff-only
-cargo build --release --bin haco-server
-sudo systemctl stop haco
-sudo install -o root -g root -m 755 target/release/haco-server /opt/haco/haco-server
-sudo systemctl start haco
+curl -fsSL https://raw.githubusercontent.com/SandyRizky/haco/main/scripts/install-linux.sh | bash
 ```
 
 Haco applies compatible SQLite schema migrations when it starts. Do not downgrade without restoring a database backup created for the older version.

@@ -1,0 +1,91 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  installer-test:
+    name: Verify Linux installer
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v5
+
+      - name: Check syntax and staged installation
+        run: |
+          bash -n scripts/install-linux.sh scripts/test-install-linux.sh
+          bash scripts/test-install-linux.sh
+
+  linux:
+    name: Linux ${{ matrix.arch }}
+    needs: installer-test
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            arch: x86_64
+            builder: cargo
+          - target: aarch64-unknown-linux-gnu
+            arch: arm64
+            builder: cross
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v5
+
+      - name: Select stable Rust
+        run: |
+          rustup update stable
+          rustup default stable
+
+      - name: Install cross compiler wrapper
+        if: matrix.builder == 'cross'
+        run: cargo install cross --locked
+
+      - name: Build server
+        run: ${{ matrix.builder }} build --release --locked --bin haco-server --target ${{ matrix.target }}
+
+      - name: Package and checksum
+        run: |
+          install -D -m 0755 target/${{ matrix.target }}/release/haco-server dist/haco-server
+          tar -C dist -czf haco-linux-${{ matrix.arch }}.tar.gz haco-server
+          sha256sum haco-linux-${{ matrix.arch }}.tar.gz > haco-linux-${{ matrix.arch }}.tar.gz.sha256
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: haco-linux-${{ matrix.arch }}
+          path: |
+            haco-linux-${{ matrix.arch }}.tar.gz
+            haco-linux-${{ matrix.arch }}.tar.gz.sha256
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub release
+    needs: linux
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v5
+        with:
+          pattern: haco-linux-*
+          merge-multiple: true
+
+      - name: Create or update release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" ./*.tar.gz ./*.sha256 --clobber
+          else
+            gh release create "$RELEASE_TAG" ./*.tar.gz ./*.sha256 --verify-tag --generate-notes --title "Haco $RELEASE_TAG"
+          fi

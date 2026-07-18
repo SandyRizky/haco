@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v5
+
+      - name: Select stable Rust
+        run: |
+          rustup update stable
+          rustup default stable
+
+      - name: Verify Rust formatting
+        run: cargo fmt --check
+
+      - name: Test server
+        run: cargo test --locked --bin haco-server
+
+      - name: Check installer syntax
+        run: bash -n scripts/install-linux.sh scripts/test-install-linux.sh
+
+      - name: Test staged Linux installation
+        run: bash scripts/test-install-linux.sh
