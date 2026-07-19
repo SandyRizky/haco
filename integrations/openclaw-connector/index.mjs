@@ -98,14 +98,17 @@ export default {
   name: "Haco Connector",
   description: "Routes OpenClaw results back to Haco.",
   register(api) {
-    api.on("agent_end", async (event, context) => {
+    // `agent_end` is fire-and-forget in OpenClaw and some gateway paths omit its
+    // context object. `before_agent_finalize` is the reliable final-answer
+    // lifecycle point: its event explicitly carries the active session key.
+    api.on("before_agent_finalize", async (event, context) => {
       // OpenClaw resolves plugin configuration per hook invocation. The API-level
       // fallback supports older runtimes while the hook context is authoritative.
       const config = context?.pluginConfig ?? event?.context?.pluginConfig ?? api.pluginConfig ?? {};
-      const sessionKey = context?.sessionKey ?? event?.context?.sessionKey ?? event?.sessionKey;
+      const sessionKey = event?.sessionKey ?? context?.sessionKey ?? event?.context?.sessionKey;
       const route = decodeRoute(sessionKey);
       if (!route?.conversation_id) {
-        api.logger?.warn?.("Haco reply skipped: the agent run has no Haco session route.");
+        api.logger?.warn?.("Haco reply skipped: the finalized agent reply has no Haco session route.");
         return;
       }
       const agentId = context?.agentId ?? event?.context?.agentId ?? event?.agentId;
@@ -120,7 +123,9 @@ export default {
       }
       const messages = Array.isArray(event?.messages) ? event.messages : [];
       const final = [...messages].reverse().find((message) => message?.role === "assistant");
-      const body = textFromMessage(final);
+      const body = typeof event?.lastAssistantMessage === "string"
+        ? event.lastAssistantMessage.trim()
+        : textFromMessage(final);
       const attachments = await attachmentsFromMessage(final, config.hacoUrl, config.token, principalId);
       if (!body && !attachments.length) {
         api.logger?.warn?.("Haco reply skipped: the completed agent run has no assistant text.");
