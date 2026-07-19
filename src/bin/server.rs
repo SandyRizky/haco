@@ -49,6 +49,7 @@ use web_push_native::{jwt_simple::algorithms::ES256KeyPair, WebPushBuilder};
 
 const SESSION_COOKIE: &str = "haco_session";
 const SESSION_DAYS: i64 = 14;
+const OPENCLAW_ALLOWED_SESSION_KEY_PREFIXES: &str = r#"["hook:","hook:haco:"]"#;
 
 #[derive(RustEmbed)]
 #[folder = "web/"]
@@ -2886,7 +2887,7 @@ async fn install_openclaw_connector(
         ("hooks.allowRequestSessionKey", "true".to_owned()),
         (
             "hooks.allowedSessionKeyPrefixes",
-            "[\"hook:haco:\"]".to_owned(),
+            OPENCLAW_ALLOWED_SESSION_KEY_PREFIXES.to_owned(),
         ),
         ("hooks.allowedAgentIds", allowed_agents),
         ("plugins.entries.haco-connector.enabled", "true".to_owned()),
@@ -7282,6 +7283,14 @@ mod tests {
         assert_eq!(route["conversation_id"], "channel-general");
         assert_eq!(route["parent_message_id"], "message-123");
         assert!(!key.contains("message-123"));
+    }
+
+    #[test]
+    fn openclaw_hook_prefixes_include_gateway_default_and_haco_routes() {
+        let prefixes: Vec<String> =
+            serde_json::from_str(OPENCLAW_ALLOWED_SESSION_KEY_PREFIXES).unwrap();
+        assert!(prefixes.iter().any(|prefix| prefix == "hook:"));
+        assert!(prefixes.iter().any(|prefix| prefix == "hook:haco:"));
     }
 
     #[test]
