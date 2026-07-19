@@ -2859,19 +2859,15 @@ async fn install_openclaw_connector(
         OpenClawConnectorInstallError::after_backup(error.to_string(), config_backup.clone())
     })?;
 
-    let list = run_openclaw_command(&["plugins", "list", "--json"])
-        .await
-        .unwrap_or_default();
-    let install_result = if list.contains("\"haco-connector\"") || list.contains("haco-connector") {
-        Ok(String::new())
-    } else {
-        run_openclaw_owned(vec![
-            "plugins".into(),
-            "install".into(),
-            plugin_dir.to_string_lossy().into_owned(),
-        ])
-        .await
-    };
+    // `--force` deliberately reinstalls Haco's own generated local plugin. This is how
+    // connector fixes reach existing Haco installations instead of only first installs.
+    let install_result = run_openclaw_owned(vec![
+        "plugins".into(),
+        "install".into(),
+        "--force".into(),
+        plugin_dir.to_string_lossy().into_owned(),
+    ])
+    .await;
     let _ = std::fs::remove_dir_all(&plugin_dir);
     install_result.map_err(|error| {
         OpenClawConnectorInstallError::after_backup(error, config_backup.clone())
@@ -3002,11 +2998,11 @@ export default {
   name: "Haco Connector",
   description: "Routes OpenClaw results back to Haco.",
   register(api) {
+    const config = api.pluginConfig ?? {};
     api.on("agent_end", async (event, context) => {
       const sessionKey = context?.sessionKey ?? event?.context?.sessionKey ?? event?.sessionKey;
       const route = decodeRoute(sessionKey);
       if (!route?.conversation_id) return;
-      const config = event?.context?.pluginConfig ?? context?.pluginConfig ?? {};
       const agentId = context?.agentId ?? event?.context?.agentId ?? event?.agentId;
       const principalId = config.principalMap?.[agentId];
       if (!principalId || !config.hacoUrl || !config.token) return;
@@ -7322,5 +7318,11 @@ mod tests {
             assert!(schema["properties"].get("token").is_some());
             assert!(schema["properties"].get("principalMap").is_some());
         }
+    }
+
+    #[test]
+    fn openclaw_connector_uses_registration_config_for_agent_replies() {
+        assert!(OPENCLAW_CONNECTOR_MODULE.contains("const config = api.pluginConfig ?? {};"));
+        assert!(!OPENCLAW_CONNECTOR_MODULE.contains("event?.context?.pluginConfig"));
     }
 }

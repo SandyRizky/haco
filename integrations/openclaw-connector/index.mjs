@@ -26,11 +26,11 @@ export default {
   name: "Haco Connector",
   description: "Routes OpenClaw results back to Haco.",
   register(api) {
+    const config = api.pluginConfig ?? {};
     api.on("agent_end", async (event, context) => {
       const sessionKey = context?.sessionKey ?? event?.context?.sessionKey ?? event?.sessionKey;
       const route = decodeRoute(sessionKey);
       if (!route?.conversation_id) return;
-      const config = event?.context?.pluginConfig ?? context?.pluginConfig ?? {};
       const agentId = context?.agentId ?? event?.context?.agentId ?? event?.agentId;
       const principalId = config.principalMap?.[agentId];
       if (!principalId || !config.hacoUrl || !config.token) return;
