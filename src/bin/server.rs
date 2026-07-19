@@ -3284,36 +3284,60 @@ export default {
   name: "Haco Connector",
   description: "Routes OpenClaw results back to Haco.",
   register(api) {
-    // `agent_end` is fire-and-forget in OpenClaw and some gateway paths omit its
-    // context object. `before_agent_finalize` is the reliable final-answer
-    // lifecycle point: its event explicitly carries the active session key.
-    api.on("before_agent_finalize", async (event, context) => {
+    // OpenClaw's hook-agent completion event can omit its session key. Capture
+    // the trusted Haco route at the start of the same run, then resolve it again
+    // by run/session ID when the final assistant answer is available.
+    const routes = new Map();
+    const routeKeys = (event, context) => [
+      context?.runId, event?.runId, context?.sessionId, event?.sessionId
+    ].filter((value) => typeof value === "string" && value.length > 0);
+    const sessionRoute = (event, context) => decodeRoute(
+      context?.sessionKey ?? event?.sessionKey ?? event?.context?.sessionKey
+    );
+    const rememberRoute = (event, context) => {
+      const route = sessionRoute(event, context);
+      if (route?.conversation_id) {
+        for (const key of routeKeys(event, context)) routes.set(key, route);
+      }
+      return route;
+    };
+    const forgetRoute = (event, context) => {
+      for (const key of routeKeys(event, context)) routes.delete(key);
+    };
+
+    api.on("before_agent_start", (event, context) => {
+      rememberRoute(event, context);
+    }, { timeoutMs: 30000 });
+
+    api.on("agent_end", async (event, context) => {
       // OpenClaw resolves plugin configuration per hook invocation. The API-level
       // fallback supports older runtimes while the hook context is authoritative.
       const config = context?.pluginConfig ?? event?.context?.pluginConfig ?? api.pluginConfig ?? {};
-      const sessionKey = event?.sessionKey ?? context?.sessionKey ?? event?.context?.sessionKey;
-      const route = decodeRoute(sessionKey);
+      const route = rememberRoute(event, context)
+        ?? routeKeys(event, context).map((key) => routes.get(key)).find(Boolean);
       if (!route?.conversation_id) {
-        api.logger?.warn?.("Haco reply skipped: the finalized agent reply has no Haco session route.");
+        forgetRoute(event, context);
+        api.logger?.warn?.("Haco reply skipped: the agent run has no Haco session route.");
         return;
       }
       const agentId = context?.agentId ?? event?.context?.agentId ?? event?.agentId;
       const principalId = config.principalMap?.[agentId];
       if (!config.hacoUrl || !config.token || !config.principalMap) {
+        forgetRoute(event, context);
         api.logger?.warn?.("Haco reply skipped: connector configuration is incomplete.");
         return;
       }
       if (!principalId) {
+        forgetRoute(event, context);
         api.logger?.warn?.("Haco reply skipped: OpenClaw agent is not mapped (" + String(agentId ?? "unknown") + ").");
         return;
       }
       const messages = Array.isArray(event?.messages) ? event.messages : [];
       const final = [...messages].reverse().find((message) => message?.role === "assistant");
-      const body = typeof event?.lastAssistantMessage === "string"
-        ? event.lastAssistantMessage.trim()
-        : textFromMessage(final);
+      const body = textFromMessage(final);
       const attachments = await attachmentsFromMessage(final, config.hacoUrl, config.token, principalId);
       if (!body && !attachments.length) {
+        forgetRoute(event, context);
         api.logger?.warn?.("Haco reply skipped: the completed agent run has no assistant text.");
         return;
       }
@@ -3338,6 +3362,8 @@ export default {
         api.logger?.info?.("Haco reply delivered for OpenClaw agent " + String(agentId));
       } catch (error) {
         api.logger?.warn?.("Haco delivery failed: " + (error instanceof Error ? error.message : String(error)));
+      } finally {
+        forgetRoute(event, context);
       }
     }, { timeoutMs: 30000 });
   }
@@ -8022,13 +8048,14 @@ mod tests {
     }
 
     #[test]
-    fn openclaw_connector_reads_configuration_and_route_from_finalized_agent_replies() {
+    fn openclaw_connector_retains_start_route_for_completed_agent_replies() {
         assert!(OPENCLAW_CONNECTOR_MODULE.contains(
             "const config = context?.pluginConfig ?? event?.context?.pluginConfig ?? api.pluginConfig ?? {};"
         ));
-        assert!(OPENCLAW_CONNECTOR_MODULE.contains("before_agent_finalize"));
+        assert!(OPENCLAW_CONNECTOR_MODULE.contains("before_agent_start"));
+        assert!(OPENCLAW_CONNECTOR_MODULE.contains("api.on(\"agent_end\""));
         assert!(OPENCLAW_CONNECTOR_MODULE.contains(
-            "const sessionKey = event?.sessionKey ?? context?.sessionKey ?? event?.context?.sessionKey;"
+            "const routes = new Map();"
         ));
         assert!(OPENCLAW_CONNECTOR_MODULE.contains("Buffer.from(encoded, \"hex\")"));
         assert!(OPENCLAW_CONNECTOR_MODULE.contains("Haco reply skipped:"));
