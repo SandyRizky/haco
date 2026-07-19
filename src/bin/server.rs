@@ -2998,40 +2998,61 @@ export default {
   name: "Haco Connector",
   description: "Routes OpenClaw results back to Haco.",
   register(api) {
-    const config = api.pluginConfig ?? {};
     api.on("agent_end", async (event, context) => {
+      // OpenClaw resolves plugin configuration per hook invocation. The API-level
+      // fallback supports older runtimes while the hook context is authoritative.
+      const config = context?.pluginConfig ?? event?.context?.pluginConfig ?? api.pluginConfig ?? {};
       const sessionKey = context?.sessionKey ?? event?.context?.sessionKey ?? event?.sessionKey;
       const route = decodeRoute(sessionKey);
-      if (!route?.conversation_id) return;
+      if (!route?.conversation_id) {
+        api.logger?.warn?.("Haco reply skipped: the agent run has no Haco session route.");
+        return;
+      }
       const agentId = context?.agentId ?? event?.context?.agentId ?? event?.agentId;
       const principalId = config.principalMap?.[agentId];
-      if (!principalId || !config.hacoUrl || !config.token) return;
+      if (!config.hacoUrl || !config.token || !config.principalMap) {
+        api.logger?.warn?.("Haco reply skipped: connector configuration is incomplete.");
+        return;
+      }
+      if (!principalId) {
+        api.logger?.warn?.("Haco reply skipped: OpenClaw agent is not mapped (" + String(agentId ?? "unknown") + ").");
+        return;
+      }
       const messages = Array.isArray(event?.messages) ? event.messages : [];
       const final = [...messages].reverse().find((message) => message?.role === "assistant");
       const body = textFromMessage(final);
-      if (!body) return;
+      if (!body) {
+        api.logger?.warn?.("Haco reply skipped: the completed agent run has no assistant text.");
+        return;
+      }
       const endpoint = String(config.hacoUrl).replace(/\/$/, "") + "/api/integrations/openclaw/events";
-      const response = await fetch(endpoint, {
-        method: "POST",
-        headers: {
-          "authorization": "Bearer " + config.token,
-          "content-type": "application/json"
-        },
-        body: JSON.stringify({
-          agent_id: principalId,
-          conversation_id: route.conversation_id,
-          parent_message_id: route.parent_message_id ?? null,
-          body,
-          activity: {
-            status: event?.success === false ? "failed" : "completed",
-            summary: "Completed an OpenClaw task requested from Haco.",
-            tool_name: "openclaw.agent"
+      try {
+        const response = await fetch(endpoint, {
+          method: "POST",
+          headers: {
+            "authorization": "Bearer " + config.token,
+            "content-type": "application/json"
           },
-          attachments: []
-        })
-      });
-      if (!response.ok) {
-        api.logger.warn("Haco delivery failed (" + response.status + "): " + await response.text());
+          body: JSON.stringify({
+            agent_id: principalId,
+            conversation_id: route.conversation_id,
+            parent_message_id: route.parent_message_id ?? null,
+            body,
+            activity: {
+              status: event?.success === false ? "failed" : "completed",
+              summary: "Completed an OpenClaw task requested from Haco.",
+              tool_name: "openclaw.agent"
+            },
+            attachments: []
+          })
+        });
+        if (!response.ok) {
+          api.logger?.warn?.("Haco delivery failed (" + response.status + "): " + await response.text());
+          return;
+        }
+        api.logger?.info?.("Haco reply delivered for OpenClaw agent " + String(agentId));
+      } catch (error) {
+        api.logger?.warn?.("Haco delivery failed: " + (error instanceof Error ? error.message : String(error)));
       }
     }, { timeoutMs: 30000 });
   }
@@ -7321,8 +7342,10 @@ mod tests {
     }
 
     #[test]
-    fn openclaw_connector_uses_registration_config_for_agent_replies() {
-        assert!(OPENCLAW_CONNECTOR_MODULE.contains("const config = api.pluginConfig ?? {};"));
-        assert!(!OPENCLAW_CONNECTOR_MODULE.contains("event?.context?.pluginConfig"));
+    fn openclaw_connector_reads_per_hook_configuration_for_agent_replies() {
+        assert!(OPENCLAW_CONNECTOR_MODULE.contains(
+            "const config = context?.pluginConfig ?? event?.context?.pluginConfig ?? api.pluginConfig ?? {};"
+        ));
+        assert!(OPENCLAW_CONNECTOR_MODULE.contains("Haco reply skipped:"));
     }
 }
