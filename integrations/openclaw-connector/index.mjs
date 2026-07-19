@@ -13,8 +13,14 @@ const decodeRoute = (sessionKey) => {
   const prefix = "hook:haco:";
   if (typeof sessionKey !== "string" || !sessionKey.startsWith(prefix)) return null;
   try {
-    const encoded = sessionKey.slice(prefix.length).replace(/-/g, "+").replace(/_/g, "/");
-    const padded = encoded + "=".repeat((4 - encoded.length % 4) % 4);
+    const encoded = sessionKey.slice(prefix.length);
+    if (/^[0-9a-f]+$/i.test(encoded) && encoded.length % 2 === 0) {
+      return JSON.parse(Buffer.from(encoded, "hex").toString("utf8"));
+    }
+    // Accept an older route only when its original mixed case survives, so an
+    // in-flight request from a pre-hex Haco server can still complete.
+    const base64 = encoded.replace(/-/g, "+").replace(/_/g, "/");
+    const padded = base64 + "=".repeat((4 - base64.length % 4) % 4);
     return JSON.parse(Buffer.from(padded, "base64").toString("utf8"));
   } catch {
     return null;

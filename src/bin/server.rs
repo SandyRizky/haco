@@ -2515,7 +2515,13 @@ fn openclaw_session_key(conversation_id: &str, parent_message_id: Option<&str>) 
         "conversation_id": conversation_id,
         "parent_message_id": parent_message_id
     });
-    let encoded = URL_SAFE_NO_PAD.encode(metadata.to_string());
+    // OpenClaw normalizes webhook session keys to lowercase. Hex preserves the
+    // opaque route metadata under that normalization; Base64URL does not.
+    let encoded = metadata
+        .to_string()
+        .bytes()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
     format!("hook:haco:{encoded}")
 }
 
@@ -2985,8 +2991,14 @@ const decodeRoute = (sessionKey) => {
   const prefix = "hook:haco:";
   if (typeof sessionKey !== "string" || !sessionKey.startsWith(prefix)) return null;
   try {
-    const encoded = sessionKey.slice(prefix.length).replace(/-/g, "+").replace(/_/g, "/");
-    const padded = encoded + "=".repeat((4 - encoded.length % 4) % 4);
+    const encoded = sessionKey.slice(prefix.length);
+    if (/^[0-9a-f]+$/i.test(encoded) && encoded.length % 2 === 0) {
+      return JSON.parse(Buffer.from(encoded, "hex").toString("utf8"));
+    }
+    // Accept an older route only when its original mixed case survives, so an
+    // in-flight request from a pre-hex Haco server can still complete.
+    const base64 = encoded.replace(/-/g, "+").replace(/_/g, "/");
+    const padded = base64 + "=".repeat((4 - base64.length % 4) % 4);
     return JSON.parse(Buffer.from(padded, "base64").toString("utf8"));
   } catch {
     return null;
@@ -7318,7 +7330,12 @@ mod tests {
     fn openclaw_session_key_carries_thread_route_without_plain_ids() {
         let key = openclaw_session_key("channel-general", Some("message-123"));
         let encoded = key.strip_prefix("hook:haco:").unwrap();
-        let decoded = URL_SAFE_NO_PAD.decode(encoded).unwrap();
+        assert_eq!(encoded, encoded.to_ascii_lowercase());
+        assert!(encoded.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        let decoded = (0..encoded.len())
+            .step_by(2)
+            .map(|offset| u8::from_str_radix(&encoded[offset..offset + 2], 16).unwrap())
+            .collect::<Vec<_>>();
         let route: serde_json::Value = serde_json::from_slice(&decoded).unwrap();
         assert_eq!(route["conversation_id"], "channel-general");
         assert_eq!(route["parent_message_id"], "message-123");
@@ -7355,6 +7372,7 @@ mod tests {
         assert!(OPENCLAW_CONNECTOR_MODULE.contains(
             "const config = context?.pluginConfig ?? event?.context?.pluginConfig ?? api.pluginConfig ?? {};"
         ));
+        assert!(OPENCLAW_CONNECTOR_MODULE.contains("Buffer.from(encoded, \"hex\")"));
         assert!(OPENCLAW_CONNECTOR_MODULE.contains("Haco reply skipped:"));
     }
 }
