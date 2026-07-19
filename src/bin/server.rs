@@ -4654,10 +4654,11 @@ impl Store {
         let mut statement = self
             .connection
             .prepare(
-                "SELECT c.openclaw_agent_id, c.response_mode, p.username, c.display_name
+                "SELECT c.openclaw_agent_id, c.response_mode, p.username, c.display_name, conversation.kind
              FROM openclaw_connections c
              JOIN principals p ON p.id = c.principal_id
              JOIN openclaw_connection_conversations cc ON cc.openclaw_agent_id = c.openclaw_agent_id
+             JOIN conversations conversation ON conversation.id = cc.conversation_id
              WHERE cc.conversation_id = ?1 AND c.enabled = 1 AND p.disabled = 0",
             )
             .map_err(ApiError::from)?;
@@ -4668,17 +4669,20 @@ impl Store {
                     row.get::<_, String>(1)?,
                     row.get::<_, String>(2)?,
                     row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
                 ))
             })
             .map_err(ApiError::from)?;
         let mut targets = Vec::new();
         for row in rows {
-            let (openclaw_agent_id, response_mode, username, display_name) =
+            let (openclaw_agent_id, response_mode, username, display_name, conversation_kind) =
                 row.map_err(ApiError::from)?;
             let mentioned = lower_body.contains(&format!("@{}", username.to_lowercase()))
                 || lower_body.contains(&format!("@{}", openclaw_agent_id.to_lowercase()))
                 || lower_body.contains(&format!("@{}", display_name.to_lowercase()));
-            if response_mode == "always" || mentioned {
+            // A direct message is already addressed to its member agent. Forums and
+            // group chats retain the chosen mention/always routing policy.
+            if conversation_kind == "direct" || response_mode == "always" || mentioned {
                 targets.push(OpenClawDispatchTarget {
                     openclaw_agent_id,
                     gateway_url: gateway_url.clone(),
@@ -7280,7 +7284,7 @@ mod tests {
                 &[OpenClawWizardAgentRequest {
                     openclaw_agent_id: "research".into(),
                     display_name: "Research Agent".into(),
-                    conversation_ids: vec!["channel-general".into()],
+                    conversation_ids: vec!["channel-general".into(), "dm-atlas".into()],
                     response_mode: "mentions".into(),
                 }],
             )
@@ -7293,6 +7297,11 @@ mod tests {
             .unwrap()
             .is_empty());
         store.set_openclaw_connector_status(true, None).unwrap();
+        let direct_targets = store
+            .openclaw_dispatch_targets("dm-atlas", "normal direct message")
+            .unwrap();
+        assert_eq!(direct_targets.len(), 1);
+        assert_eq!(direct_targets[0].openclaw_agent_id, "research");
         let username = store.principal(principal_id).unwrap().username;
         let targets = store
             .openclaw_dispatch_targets(
