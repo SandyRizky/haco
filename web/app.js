@@ -1,4 +1,4 @@
-const state = { conversations: [], selected: null, messages: [], currentUser: null, replyTo: null, threadRoot: null, socket: null, filter: 'all', adminToken: null, adminSettings: null, settingsTab: 'workspace', authStatus: null, users: [], modalSubmit: null, typingTimer: null, draftTimer: null, remoteTyping: new Map(), pendingAttachments: [], hasOlder: false, notifications: [], pushRegistration: null, pushConfiguration: null, openclawDiscovery: null };
+const state = { conversations: [], selected: null, messages: [], currentUser: null, replyTo: null, threadRoot: null, socket: null, filter: 'all', adminToken: null, adminSettings: null, settingsTab: 'workspace', authStatus: null, users: [], modalSubmit: null, typingTimer: null, draftTimer: null, remoteTyping: new Map(), pendingAttachments: [], hasOlder: false, notifications: [], pushRegistration: null, pushConfiguration: null, openclawDiscovery: null, popoverMessage: null };
 const dom = {
   list: document.querySelector('#conversations'), feed: document.querySelector('#messages'), title: document.querySelector('#conversation-title'),
   kind: document.querySelector('#conversation-kind'), description: document.querySelector('#conversation-description'), status: document.querySelector('#connection-status'),
@@ -31,12 +31,13 @@ const dom = {
   openOpenClawWizard: document.querySelector('#open-openclaw-wizard'), refreshOpenClaw: document.querySelector('#refresh-openclaw'), openclawConnections: document.querySelector('#openclaw-connections'), openclawOverallState: document.querySelector('#openclaw-overall-state'), openclawWizardStatus: document.querySelector('#openclaw-wizard-status'),
   runRetention: document.querySelector('#run-retention'), retentionStatus: document.querySelector('#retention-status'),
   createHuman: document.querySelector('#create-human'), createAgent: document.querySelector('#create-agent'), createInvite: document.querySelector('#create-invite'),
-  workspaceModal: document.querySelector('#workspace-modal'), workspaceModalTitle: document.querySelector('#workspace-modal-title'), workspaceModalBody: document.querySelector('#workspace-modal-body'), workspaceModalForm: document.querySelector('#workspace-modal-form'), workspaceModalError: document.querySelector('#workspace-modal-error'), closeWorkspaceModal: document.querySelector('#close-workspace-modal'), workspaceModalCancel: document.querySelector('#workspace-modal-cancel'), workspaceModalSubmit: document.querySelector('#workspace-modal-submit')
+  workspaceModal: document.querySelector('#workspace-modal'), workspaceModalTitle: document.querySelector('#workspace-modal-title'), workspaceModalBody: document.querySelector('#workspace-modal-body'), workspaceModalForm: document.querySelector('#workspace-modal-form'), workspaceModalError: document.querySelector('#workspace-modal-error'), closeWorkspaceModal: document.querySelector('#close-workspace-modal'), workspaceModalCancel: document.querySelector('#workspace-modal-cancel'), workspaceModalSubmit: document.querySelector('#workspace-modal-submit'),
+  messageActionsPopover: document.querySelector('#message-actions-popover'), headerDot: document.querySelector('#header-dot')
 };
 
 const iconFor = (kind) => ({ channel: '#', group: '◉', direct: '@' }[kind] || '•');
 const labelFor = (kind) => ({ channel: 'Forum', group: 'Group chat', direct: 'Direct message' }[kind] || 'Conversation');
-const escapeHtml = (value) => value.replace(/[&<>"]/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[character]));
+const escapeHtml = (value) => value.replace(/[&<>"']/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character]));
 const currentConversation = () => state.conversations.find((conversation) => conversation.id === state.selected);
 
 async function request(path, options = {}) {
@@ -359,6 +360,7 @@ async function openOpenClawWizard() {
           install_connector: true,
           agents: selectedAgentIds.map((id) => {
             const agent = discovery.agents.find((item) => item.id === id);
+            if (!agent) throw new Error(`Agent '${id}' not found in discovery response`);
             return { openclaw_agent_id: id, display_name: agent.display_name, conversation_ids: conversationIds, response_mode: form.response_mode.value };
           })
         })
@@ -624,7 +626,7 @@ function renderConversations() {
 
 function renderHeader() {
   const conversation = currentConversation();
-  dom.title.textContent = conversation ? `${iconFor(conversation.kind)} ${conversation.title}` : 'No conversation selected';
+  dom.title.textContent = conversation ? conversation.title : 'No conversation selected';
   dom.kind.textContent = conversation ? labelFor(conversation.kind) : '';
   dom.description.textContent = conversation?.description || '';
   dom.channelSymbol.textContent = conversation ? iconFor(conversation.kind) : '•';
@@ -637,7 +639,7 @@ function renderMessages() {
     ? state.messages.filter((message) => !message.parent_message_id)
     : state.messages;
   visibleMessages.forEach((message) => dom.feed.append(createMessageNode(message)));
-  if (!visibleMessages.length) dom.feed.innerHTML = '<div class="empty-feed"><span>✦</span><strong>No messages yet</strong><p>Start the conversation with a person or agent.</p></div>';
+  if (!visibleMessages.length) dom.feed.innerHTML = '<div class="empty-feed"><svg width="36" height="36" viewBox="0 0 36 36" fill="none" aria-hidden="true"><circle cx="18" cy="13" r="5" stroke="currentColor" stroke-width="1.5"/><path d="M4 32c0-5.5 4-10 14-10s14 4.5 14 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M18 1v4M18 22v4M6 6l3 3M27 9l-3 3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" opacity="0.4"/></svg><strong>No messages yet</strong><p>Start the conversation with a person or agent.</p></div>';
   dom.loadOlder.hidden = !state.hasOlder;
   dom.feed.scrollTop = dom.feed.scrollHeight;
 }
@@ -709,20 +711,59 @@ function createMessageNode(message, options = {}) {
     threadButton.addEventListener('click', () => openThread(message));
   }
   const canManageMessage = !message.is_deleted && (message.sender.id === state.currentUser?.id || state.currentUser?.access_role === 'admin');
-  const editButton = article.querySelector('.edit-message');
-  const deleteButton = article.querySelector('.delete-message');
-  editButton.hidden = !canManageMessage;
-  deleteButton.hidden = !canManageMessage;
-  editButton.addEventListener('click', () => openEditMessage(message));
-  deleteButton.addEventListener('click', () => removeMessage(message));
-  article.querySelector('.react-message').addEventListener('click', () => chooseReaction(message));
-  const pinButton = article.querySelector('.pin-message'); pinButton.textContent = message.is_pinned ? 'Unpin' : 'Pin'; pinButton.addEventListener('click', () => toggleMessageState(message, 'pin'));
-  const saveButton = article.querySelector('.save-message'); saveButton.textContent = message.is_saved ? 'Saved' : 'Save'; saveButton.addEventListener('click', () => toggleMessageState(message, 'save'));
+  const moreActionsButton = article.querySelector('.more-actions-button');
+  moreActionsButton.addEventListener('click', (e) => {
+    e.stopPropagation();
+    openMessageActionsPopover(message, moreActionsButton);
+  });
+  const pinButton = article.querySelector('.pinned-label');
+  pinButton.textContent = message.is_pinned ? 'Pinned' : '';
+  pinButton.hidden = !message.is_pinned;
   return article;
 }
 
 const formatBytes = (bytes) => bytes < 1024 ? `${bytes} B` : bytes < 1048576 ? `${(bytes / 1024).toFixed(1)} KB` : `${(bytes / 1048576).toFixed(1)} MB`;
 function openMedia(attachment) { dom.mediaViewerContent.innerHTML = `<img src="${escapeHtml(attachment.url)}" alt="${escapeHtml(attachment.file_name)}">`; dom.mediaViewer.hidden = false; }
+
+let currentPopoverMessage = null;
+function openMessageActionsPopover(message, trigger) {
+  currentPopoverMessage = message;
+  const rect = trigger.getBoundingClientRect();
+  const popover = dom.messageActionsPopover;
+  popover.querySelector('[data-action="pin"]').textContent = message.is_pinned ? 'Unpin' : 'Pin';
+  popover.querySelector('[data-action="save"]').textContent = message.is_saved ? 'Unsave' : 'Save';
+  const canManage = !message.is_deleted && (message.sender.id === state.currentUser?.id || state.currentUser?.access_role === 'admin');
+  popover.querySelector('[data-action="edit"]').hidden = !canManage;
+  popover.querySelector('[data-action="delete"]').hidden = !canManage;
+  popover.hidden = false;
+  const x = Math.min(rect.left, window.innerWidth - 160);
+  const y = rect.bottom + 4;
+  popover.style.left = `${x}px`;
+  popover.style.top = `${y}px`;
+  setTimeout(() => document.addEventListener('click', closeMessageActionsPopover, { once: true }), 0);
+}
+
+function closeMessageActionsPopover() {
+  dom.messageActionsPopover.hidden = true;
+  currentPopoverMessage = null;
+}
+
+dom.messageActionsPopover.querySelector('[data-action="react"]').addEventListener('click', () => {
+  if (currentPopoverMessage) chooseReaction(currentPopoverMessage);
+  closeMessageActionsPopover();
+});
+dom.messageActionsPopover.querySelector('[data-action="pin"]').addEventListener('click', () => {
+  if (currentPopoverMessage) { toggleMessageState(currentPopoverMessage, 'pin'); closeMessageActionsPopover(); }
+});
+dom.messageActionsPopover.querySelector('[data-action="save"]').addEventListener('click', () => {
+  if (currentPopoverMessage) { toggleMessageState(currentPopoverMessage, 'save'); closeMessageActionsPopover(); }
+});
+dom.messageActionsPopover.querySelector('[data-action="edit"]').addEventListener('click', () => {
+  if (currentPopoverMessage) { closeMessageActionsPopover(); openEditMessage(currentPopoverMessage); }
+});
+dom.messageActionsPopover.querySelector('[data-action="delete"]').addEventListener('click', () => {
+  if (currentPopoverMessage) { closeMessageActionsPopover(); removeMessage(currentPopoverMessage); }
+});
 async function reactToMessage(message, emoji) { try { replaceMessage(await request(`/api/messages/${message.id}/reactions`, { method: 'POST', body: JSON.stringify({ emoji }) })); } catch (error) { setStatus(error.message, false); } }
 function chooseReaction(message) { openWorkspaceModal('Add reaction', '<div class="emoji-picker"><button type="button">👍</button><button type="button">❤️</button><button type="button">🎉</button><button type="button">👀</button><button type="button">🤔</button><button type="button">✅</button></div>', async () => {}); dom.workspaceModalBody.querySelectorAll('.emoji-picker button').forEach((button) => button.addEventListener('click', async () => { closeWorkspaceModal(); await reactToMessage(message, button.textContent); })); }
 async function toggleMessageState(message, action) { try { replaceMessage(await request(`/api/messages/${message.id}/${action}`, { method: 'POST' })); } catch (error) { setStatus(error.message, false); } }
@@ -809,7 +850,7 @@ function renderThread() {
   dom.threadRoot.append(createMessageNode(state.threadRoot, { thread: true }));
   replies.forEach((reply) => dom.threadMessages.append(createMessageNode(reply, { thread: true })));
   dom.threadCount.textContent = `${replies.length} ${replies.length === 1 ? 'reply' : 'replies'}`;
-  if (!replies.length) dom.threadMessages.innerHTML = '<div class="thread-empty">No replies yet. Start the thread below.</div>';
+  if (!replies.length) dom.threadMessages.innerHTML = '<div class="thread-empty"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 4h16v12H8l-4 4V4Z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg><p>No replies yet. Start the thread below.</p></div>';
   dom.threadMessages.scrollTop = dom.threadMessages.scrollHeight;
 }
 
@@ -976,7 +1017,7 @@ function renderNotifications() {
 async function refreshConversations() {
   try { state.conversations = await request('/api/conversations'); renderConversations(); } catch (_) {}
 }
-function setStatus(text, online) { dom.status.textContent = text; dom.dot.classList.toggle('online', online); }
+function setStatus(text, online) { dom.status.textContent = text; dom.dot.classList.toggle('online', online); dom.headerDot.classList.toggle('online', online); }
 function connectSocket() {
   const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
   const socket = new WebSocket(`${protocol}://${location.host}/ws`);
@@ -1146,6 +1187,7 @@ document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape') {
     if (!dom.workspaceModal.hidden) closeWorkspaceModal();
     else if (!dom.settingsOverlay.hidden) closeSettings();
+    else if (!dom.messageActionsPopover.hidden) closeMessageActionsPopover();
     else { closeSearch(); closeMobileSidebar(); closeThread(); }
   }
 });
