@@ -136,6 +136,15 @@ pub struct OpenClawEvent {
     pub attachments: Vec<Attachment>,
     #[serde(default)]
     pub reasoning: Option<String>,
+    /// Stable identifier supplied by an integration so retries are idempotent.
+    #[serde(default)]
+    pub delivery_id: Option<String>,
+    /// Correlates the admin connection test with the actual agent callback.
+    #[serde(default)]
+    pub test_id: Option<String>,
+    /// Prevents an agent-to-agent DM from recursively bouncing forever.
+    #[serde(default)]
+    pub relay_depth: u8,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

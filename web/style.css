@@ -612,8 +612,8 @@ select:focus-visible, summary:focus-visible, [tabindex]:focus-visible {
   margin-left: auto;
 }
 
-.message.own .avatar { grid-column: 2; }
-.message.own .message-content { grid-column: 1; align-items: flex-end; }
+.message.own .message-avatar-stack { grid-column: 2; }
+.message.own .message-content { grid-column: 1; grid-row: 1; align-items: flex-end; }
 .message.own .message-meta { justify-content: flex-end; }
 
 .message.own .message-bubble {
@@ -636,6 +636,17 @@ select:focus-visible, summary:focus-visible, [tabindex]:focus-visible {
 .message.thread-context { width: 100%; margin-bottom: 10px; }
 
 /* Avatar */
+.message-avatar-stack {
+  display: flex;
+  grid-column: 1;
+  grid-row: 1;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  width: 36px;
+  margin-top: 22px;
+}
+
 .avatar {
   display: grid; place-items: center;
   width: 36px; height: 36px;
@@ -646,6 +657,28 @@ select:focus-visible, summary:focus-visible, [tabindex]:focus-visible {
   box-shadow: 0 5px 14px rgba(0, 0, 0, 0.16);
   font-size: 11px; font-weight: 820;
   flex-shrink: 0;
+}
+
+.presence-pill {
+  display: block;
+  width: 22px;
+  height: 4px;
+  border: 1px solid rgba(170, 180, 205, 0.22);
+  border-radius: 999px;
+  background: rgba(128, 138, 160, 0.38);
+  box-shadow: inset 0 1px rgba(255, 255, 255, 0.06);
+}
+
+.presence-pill.online {
+  border-color: rgba(199, 243, 106, 0.56);
+  background: var(--lime);
+  box-shadow: 0 0 8px rgba(199, 243, 106, 0.42);
+}
+
+.presence-pill.agent.online {
+  border-color: rgba(101, 217, 255, 0.6);
+  background: var(--cyan);
+  box-shadow: 0 0 8px rgba(101, 217, 255, 0.46);
 }
 
 /* Message Content */
@@ -661,7 +694,7 @@ select:focus-visible, summary:focus-visible, [tabindex]:focus-visible {
   text-overflow: ellipsis; white-space: nowrap;
 }
 
-.principal-kind, .pinned-label {
+.pinned-label {
   padding: 2px 5px; border-radius: 4px;
   color: var(--text-secondary);
   background: rgba(151, 174, 255, 0.1);
@@ -669,7 +702,6 @@ select:focus-visible, summary:focus-visible, [tabindex]:focus-visible {
   letter-spacing: 0.07em; text-transform: uppercase;
 }
 
-.message.agent .principal-kind { color: #e7ddff; background: var(--violet-soft); }
 .pinned-label { color: #deefae; background: var(--lime-soft); letter-spacing: 0; text-transform: none; }
 
 /* Reply button (visible on hover) */
@@ -1981,11 +2013,11 @@ select:focus-visible, summary:focus-visible, [tabindex]:focus-visible {
   .url-preview > img { width: 66px; height: 56px; }
 
   .composer-shell { padding: 0 9px max(10px, env(safe-area-inset-bottom)); }
-  .composer { grid-template-columns: 36px minmax(0, 1fr) 36px; gap: 5px; padding: 5px; border-radius: 14px; }
-  .composer textarea { min-height: 36px; padding: 7px 2px 6px; font-size: 12px; }
+  .composer { grid-template-columns: 44px minmax(0, 1fr) 44px; gap: 5px; padding: 5px; border-radius: 14px; }
+  .composer textarea { min-height: 44px; padding: 10px 2px 8px; font-size: 12px; }
   .composer-hint { display: none; }
 
-  .composer-action, .composer-tools button[type="submit"] { width: 36px; height: 36px; }
+  .composer-action, .composer-tools button[type="submit"] { width: 44px; height: 44px; }
 
   .reply-state { margin-bottom: 5px; }
 

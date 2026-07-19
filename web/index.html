@@ -483,11 +483,13 @@
 
     <template id="message-template">
       <article class="message">
-        <div class="avatar" aria-hidden="true"></div>
+        <div class="message-avatar-stack" aria-hidden="true">
+          <div class="avatar"></div>
+          <span class="presence-pill"></span>
+        </div>
         <div class="message-content">
           <div class="message-meta">
             <strong></strong>
-            <span class="principal-kind"></span>
             <span class="pinned-label" hidden>Pinned</span>
             <button class="reply-button" type="button" title="Reply">
               <svg width="13" height="13" viewBox="0 0 13 13" fill="none" aria-hidden="true"><path d="M1 5v5a1 1 0 0 0 1 1h2l4-3L4 5H2a1 1 0 0 0-1 1Z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>

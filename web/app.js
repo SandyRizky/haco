@@ -300,7 +300,7 @@ function renderOpenClawConnections(discovery) {
   dom.openclawWizardStatus.classList.toggle('error', !discovery.cli_available);
   dom.openclawConnections.innerHTML = discovery.connections.map((connection) => {
     const conversations = connection.conversation_ids.map((id) => discovery.conversations.find((item) => item.id === id)?.title || id).join(', ');
-    const detail = connection.last_error || `${connection.response_mode === 'always' ? 'Responds to every message' : 'Responds when mentioned'} · ${conversations}`;
+    const detail = connection.last_error || (connection.test_pending ? 'Connection test is waiting for the agent reply…' : `${connection.response_mode === 'always' ? 'Responds to every message' : 'Responds when mentioned'} · ${conversations}`);
     return `<div class="openclaw-connection ${connection.status === 'error' ? 'error' : ''}"><span class="openclaw-connection-avatar">${escapeHtml(connection.display_name.slice(0, 1).toUpperCase())}</span><span><strong>${escapeHtml(connection.display_name)}</strong><small>${escapeHtml(detail)}</small></span><span class="openclaw-connection-actions"><button class="settings-inline-button" type="button" data-test-openclaw="${escapeHtml(connection.openclaw_agent_id)}">Test</button><button class="settings-inline-button" type="button" data-disconnect-openclaw="${escapeHtml(connection.openclaw_agent_id)}">Disconnect</button></span></div>`;
   }).join('') || '<p class="settings-help">No connected agents yet. The wizard can connect all agents on this server in one pass.</p>';
   dom.openclawConnections.querySelectorAll('[data-test-openclaw]').forEach((button) => button.addEventListener('click', async () => {
@@ -309,8 +309,17 @@ function renderOpenClawConnections(discovery) {
     try {
       await request('/api/admin/openclaw/test', { method: 'POST', headers: adminHeaders(), body: JSON.stringify({ openclaw_agent_id: button.dataset.testOpenclaw }) });
       dom.settingsSaveStatus.textContent = 'Test sent · waiting for agent reply';
-      window.setTimeout(() => { dom.settingsSaveStatus.textContent = ''; }, 5000);
       await refreshOpenClawStatus();
+      for (const delay of [2000, 4000, 7000]) {
+        await new Promise((resolve) => window.setTimeout(resolve, delay));
+        await refreshOpenClawStatus();
+        const current = state.openclawDiscovery?.connections.find((item) => item.openclaw_agent_id === button.dataset.testOpenclaw);
+        if (!current?.test_pending) {
+          dom.settingsSaveStatus.textContent = current?.last_error ? 'Connection test failed' : 'Connection test succeeded';
+          break;
+        }
+      }
+      window.setTimeout(() => { dom.settingsSaveStatus.textContent = ''; }, 5000);
     } catch (error) {
       dom.settingsFormError.textContent = error.message;
       dom.settingsFormError.hidden = false;
@@ -345,12 +354,11 @@ async function openOpenClawWizard() {
     if (!discovery.agents.length) throw new Error('No OpenClaw agents were discovered on this server.');
     const alreadyConnected = new Set(discovery.connections.map((connection) => connection.openclaw_agent_id));
     const agentOptions = discovery.agents.map((agent) => `<label class="wizard-agent-option"><input type="checkbox" name="openclaw_agents" value="${escapeHtml(agent.id)}" ${alreadyConnected.has(agent.id) ? 'checked' : ''}/><span class="openclaw-connection-avatar">${escapeHtml(agent.display_name.slice(0, 1).toUpperCase())}</span><span><strong>${escapeHtml(agent.display_name)}</strong><small>${escapeHtml(agent.workspace || agent.id)}</small></span></label>`).join('');
-    const conversationOptions = discovery.conversations.filter((conversation) => !conversation.archived).map((conversation) => `<label><input type="checkbox" name="openclaw_conversations" value="${escapeHtml(conversation.id)}" ${conversation.kind === 'channel' ? 'checked' : ''}/><span class="settings-user-avatar">${escapeHtml(iconFor(conversation.kind))}</span><span><strong>${escapeHtml(conversation.title)}</strong><small>${escapeHtml(labelFor(conversation.kind))}</small></span></label>`).join('');
-    openWorkspaceModal('Connect local OpenClaw', `<div class="wizard-progress"><span class="active">1 · Discovered</span><span class="active">2 · Choose access</span><span>3 · Connect</span></div><div class="wizard-discovery"><div><strong>${discovery.cli_available ? 'OpenClaw found' : 'Not found'}</strong><small>${escapeHtml(discovery.version || 'Version unavailable')}</small></div><div><strong>${discovery.gateway_reachable ? 'Gateway online' : 'Gateway not reachable'}</strong><small>${escapeHtml(discovery.gateway_url)}</small></div></div><label class="settings-field"><span>Local Gateway URL</span><small>Automatic setup is restricted to this server.</small><input name="gateway_url" type="url" value="${escapeHtml(discovery.gateway_url)}" required /></label><div><span class="modal-label">Agents to connect</span><div class="wizard-agent-picker">${agentOptions}</div></div><div><span class="modal-label">Conversations these agents can access</span><div class="member-picker">${conversationOptions}</div></div><label class="settings-field"><span>When should agents respond?</span><select name="response_mode"><option value="mentions">Only when @mentioned (recommended)</option><option value="always">Every human message in selected conversations</option></select></label><p class="wizard-note">Before changing OpenClaw, Haco saves a protected backup of the active configuration and any included configuration files. It then creates agent accounts, permissions, credentials, routing, the local connector, and restarts the Gateway.</p>`, async (form) => {
+    const conversationOptions = discovery.conversations.filter((conversation) => !conversation.archived && conversation.kind !== 'direct').map((conversation) => `<label><input type="checkbox" name="openclaw_conversations" value="${escapeHtml(conversation.id)}" ${conversation.kind === 'channel' ? 'checked' : ''}/><span class="settings-user-avatar">${escapeHtml(iconFor(conversation.kind))}</span><span><strong>${escapeHtml(conversation.title)}</strong><small>${escapeHtml(labelFor(conversation.kind))}</small></span></label>`).join('');
+    openWorkspaceModal('Connect local OpenClaw', `<div class="wizard-progress"><span class="active">1 · Discovered</span><span class="active">2 · Choose access</span><span>3 · Connect</span></div><div class="wizard-discovery"><div><strong>${discovery.cli_available ? 'OpenClaw found' : 'Not found'}</strong><small>${escapeHtml(discovery.version || 'Version unavailable')}</small></div><div><strong>${discovery.gateway_reachable ? 'Gateway online' : 'Gateway not reachable'}</strong><small>${escapeHtml(discovery.gateway_url)}</small></div></div><label class="settings-field"><span>Local Gateway URL</span><small>Automatic setup is restricted to this server.</small><input name="gateway_url" type="url" value="${escapeHtml(discovery.gateway_url)}" required /></label><div><span class="modal-label">Agents to connect</span><div class="wizard-agent-picker">${agentOptions}</div></div><div><span class="modal-label">Forum and group access</span><small class="settings-help">Each agent automatically gets a private DM with you. Choose any shared spaces it may also access.</small><div class="member-picker">${conversationOptions}</div></div><label class="settings-field"><span>When should agents respond in shared spaces?</span><select name="response_mode"><option value="mentions">Only when @mentioned (recommended)</option><option value="always">Every message in selected spaces</option></select></label><p class="wizard-note">Before changing OpenClaw, Haco saves a protected backup of the active configuration and any included configuration files. It then creates stable agent accounts, private DMs, permissions, credentials, routing, the local connector, and restarts the Gateway.</p>`, async (form) => {
       const selectedAgentIds = [...form.querySelectorAll('[name="openclaw_agents"]:checked')].map((input) => input.value);
       const conversationIds = [...form.querySelectorAll('[name="openclaw_conversations"]:checked')].map((input) => input.value);
       if (!selectedAgentIds.length) throw new Error('Select at least one agent.');
-      if (!conversationIds.length) throw new Error('Select at least one conversation.');
       dom.workspaceModalSubmit.textContent = 'Connecting…';
       const result = await request('/api/admin/openclaw/connect', {
         method: 'POST',
@@ -407,16 +415,36 @@ function closeWorkspaceModal() {
   state.modalSubmit = null;
 }
 
-const memberChecklist = (selected = []) => `<div class="member-picker">${state.users.filter((user) => !user.disabled).map((user) => `<label><input type="checkbox" name="member_ids" value="${escapeHtml(user.id)}" ${selected.includes(user.id) ? 'checked' : ''}/><span class="settings-user-avatar ${user.kind === 'agent' ? 'agent' : ''}">${escapeHtml(user.display_name[0])}</span><span><strong>${escapeHtml(user.display_name)}</strong><small>${escapeHtml(user.kind)}</small></span></label>`).join('')}</div>`;
+const memberChecklist = (selected = [], excludeCurrent = false) => `<div class="member-picker">${state.users.filter((user) => !user.disabled && (!excludeCurrent || user.id !== state.currentUser?.id)).map((user) => `<label><input type="checkbox" name="member_ids" value="${escapeHtml(user.id)}" ${selected.includes(user.id) ? 'checked' : ''}/><span class="settings-user-avatar ${user.kind === 'agent' ? 'agent' : ''}">${escapeHtml(user.display_name[0])}</span><span><strong>${escapeHtml(user.display_name)}</strong><small>@${escapeHtml(user.username)}</small></span></label>`).join('')}</div>`;
 
 async function openNewConversation() {
   if (!state.users.length) state.users = await request('/api/users');
-  openWorkspaceModal('New conversation', `<div class="settings-field-grid"><label class="settings-field"><span>Type</span><select name="kind"><option value="group">Group chat</option><option value="direct">Direct message</option>${state.currentUser?.access_role === 'admin' ? '<option value="channel">Forum</option>' : ''}</select></label><label class="settings-field"><span>Name</span><input name="title" maxlength="80" required /></label></div><label class="settings-field"><span>Topic or description</span><input name="description" /></label><label class="settings-toggle"><span><strong>Private conversation</strong><small>Only selected members can access it.</small></span><input name="is_private" type="checkbox" checked/><i></i></label><div><span class="modal-label">Members</span>${memberChecklist([state.currentUser.id])}</div>`, async (form) => {
-    const payload = { kind: form.kind.value, title: form.title.value, description: form.description.value || null, is_private: form.is_private.checked, member_ids: [...form.querySelectorAll('[name="member_ids"]:checked')].map((item) => item.value) };
+  openWorkspaceModal('New conversation', `<div class="settings-field-grid"><label class="settings-field"><span>Type</span><select name="kind"><option value="direct">Direct message</option><option value="group">Group chat</option>${state.currentUser?.access_role === 'admin' ? '<option value="channel">Forum</option>' : ''}</select></label><label class="settings-field" data-conversation-name hidden><span>Name</span><input name="title" maxlength="80" /></label></div><label class="settings-field"><span>Topic or description</span><input name="description" /></label><label class="settings-toggle"><span><strong>Private conversation</strong><small>Only selected members can access it.</small></span><input name="is_private" type="checkbox" checked/><i></i></label><div><span class="modal-label" data-member-label>Recipient</span>${memberChecklist([], true)}</div>`, async (form) => {
+    const memberIds = [...form.querySelectorAll('[name="member_ids"]:checked')].map((item) => item.value);
+    if (form.kind.value === 'direct' && memberIds.length !== 1) throw new Error('Choose exactly one person or agent for this DM.');
+    const payload = { kind: form.kind.value, title: form.kind.value === 'direct' ? '' : form.title.value, description: form.description.value || null, is_private: form.kind.value === 'direct' || form.is_private.checked, member_ids: memberIds };
     const conversation = await request('/api/conversations', { method: 'POST', body: JSON.stringify(payload) });
     state.conversations = await request('/api/conversations');
     closeWorkspaceModal(); await selectConversation(conversation.id);
   });
+  const form = dom.workspaceModalBody.closest('form');
+  const kind = form.elements.kind;
+  const syncKind = () => {
+    const direct = kind.value === 'direct';
+    const nameField = form.querySelector('[data-conversation-name]');
+    nameField.hidden = direct;
+    form.elements.title.required = !direct;
+    form.querySelector('[data-member-label]').textContent = direct ? 'Recipient' : 'Members';
+    if (direct) {
+      const checked = [...form.querySelectorAll('[name="member_ids"]:checked')];
+      checked.slice(1).forEach((input) => { input.checked = false; });
+    }
+  };
+  kind.addEventListener('change', syncKind);
+  form.querySelectorAll('[name="member_ids"]').forEach((input) => input.addEventListener('change', () => {
+    if (kind.value === 'direct' && input.checked) form.querySelectorAll('[name="member_ids"]').forEach((other) => { if (other !== input) other.checked = false; });
+  }));
+  syncKind();
 }
 
 async function openManageConversation() {
@@ -651,8 +679,11 @@ function createMessageNode(message, options = {}) {
   article.classList.toggle('own', message.sender.id === state.currentUser?.id);
   article.classList.toggle('thread-context', Boolean(options.thread));
   article.querySelector('.avatar').textContent = message.sender.display_name.slice(0, 1).toUpperCase();
+  const presence = article.querySelector('.presence-pill');
+  const online = message.sender.presence === 'online' || message.sender.presence === 'working';
+  presence.classList.toggle('online', online);
+  presence.classList.toggle('agent', message.sender.kind === 'agent');
   article.querySelector('.message-meta strong').textContent = message.sender.display_name;
-  article.querySelector('.principal-kind').textContent = message.sender.kind;
   article.querySelector('time').textContent = new Intl.DateTimeFormat([], { hour: '2-digit', minute: '2-digit' }).format(new Date(message.created_at));
   article.querySelector('.message-body').textContent = message.body;
   article.classList.toggle('deleted', Boolean(message.is_deleted));

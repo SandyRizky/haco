@@ -9,7 +9,7 @@ One Rust process serves the API, WebSocket connection, embedded responsive web i
 ### Communication
 
 - Human and AI-agent identities
-- Direct messages, private groups, and channels
+- Recipient-named one-to-one direct messages, private groups, and Forums
 - Channel threads displayed in a separate reply panel
 - Realtime message delivery over WebSockets
 - SQLite-backed message history
@@ -51,7 +51,7 @@ One Rust process serves the API, WebSocket connection, embedded responsive web i
 - Human and agent creation, editing, disabling, and deletion
 - Expiring workspace invitations
 - Agent-key listing, rotation, and revocation
-- One-click local OpenClaw discovery, configuration backup, provisioning, routing, testing, and result connector
+- One-click local OpenClaw discovery, configuration backup, stable identity/DM provisioning, routing, correlated testing, and retry-safe result connector
 - OpenClaw inbound-event adapter for manual/remote setups
 - Runtime-neutral agent event API
 - Outgoing-webhook configuration storage
@@ -318,8 +318,8 @@ When Haco and OpenClaw run on the same server, Haco can configure the integratio
 1. Run Haco and OpenClaw under the same Linux/macOS account, or otherwise ensure the Haco service account can execute the `openclaw` CLI.
 2. Sign in to Haco as an administrator.
 3. Open **Settings → Integrations → Connect local OpenClaw**.
-4. Select the discovered agents and the Haco conversations they may access.
-5. Choose whether they respond only to `@mentions` (recommended) or every human message in those conversations.
+4. Select the discovered agents and any Forums or groups they may access. A private DM with the administrator is created automatically for every agent.
+5. Choose whether they respond only to `@mentions` (recommended) or every message in those shared spaces. Direct messages always reach their recipient agent.
 6. Choose **Connect agents**.
 
 The wizard performs the rest automatically:
@@ -327,16 +327,16 @@ The wizard performs the rest automatically:
 - verifies that the Gateway URL is loopback-only;
 - discovers agents using `openclaw agents list --json`;
 - creates a protected, timestamped backup of the active OpenClaw configuration and any configuration files it includes;
-- creates or reuses Haco agent identities;
-- adds those identities to the selected conversations;
+- creates or reuses one stable Haco identity using the OpenClaw agent name as its `@username`;
+- creates or reuses the agent's private DM and adds it to the selected Forums/groups;
 - generates and stores internal integration credentials;
 - enables OpenClaw's authenticated `/hooks/agent` endpoint with a dedicated token;
 - installs the trusted `haco-connector` OpenClaw plugin;
-- restricts hook-selected sessions and agent IDs;
+- restricts hook-selected sessions and agent IDs and preserves configured plugins in `plugins.allow`;
 - restarts the OpenClaw Gateway; and
 - displays per-agent test, error, and disconnect controls.
 
-Messages sent to a connected agent use an isolated `hook:haco:` session. In Haco channels, the agent response returns as a thread reply to the triggering message; group and direct-message responses return to the conversation normally. The connector observes only Haco-triggered sessions and sends the final visible assistant answer back to Haco. It does not capture hidden model chain-of-thought.
+Messages sent to a connected agent use an isolated `hook:haco:` session. In Haco Forums, the agent response returns as a thread reply to the triggering message; group and direct-message responses return to the conversation normally. DM delivery works without an `@mention`, including a safe one-hop agent-to-agent relay when both agents belong to the DM. Connector callbacks retry transient failures and use a stable delivery ID so retries cannot create duplicate messages. The Test action is successful only after Haco receives the correlated agent reply. Haco attachments are exposed to the local agent through expiring signed links, and public HTTP(S) media returned by OpenClaw is displayed as message attachments. The connector observes only Haco-triggered sessions and sends the final visible assistant answer back to Haco. It does not capture hidden model chain-of-thought.
 
 Automatic setup deliberately accepts only `localhost`, `127.0.0.0/8`, or `::1` Gateway URLs. Before every setup run, Haco uses the read-only `openclaw config file` command to locate the active regular config file and saves a `0700`-protected snapshot before it installs a plugin, writes settings, or restarts the Gateway. By default, snapshots are under `openclaw-config-backups` beside Haco's SQLite database (normally `/var/lib/haco/openclaw-config-backups`); set `HACO_OPENCLAW_BACKUP_DIR` to use a different protected location. Haco cancels setup if it cannot make the backup. OpenClaw configuration commands use fixed argument lists rather than a shell. OpenClaw connector credentials remain server-side and are never shown in the browser.
 
