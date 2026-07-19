@@ -43,9 +43,16 @@ async function request(path, options = {}) {
   const { headers = {}, ...rest } = options;
   const requestHeaders = rest.body instanceof FormData ? { ...headers } : { 'content-type': 'application/json', ...headers };
   const response = await fetch(path, { ...rest, headers: requestHeaders });
-  if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || `Request failed (${response.status})`);
-  if (response.status === 204) return null;
-  return response.json();
+  const body = await response.text();
+  let payload = null;
+  if (body.trim()) {
+    try { payload = JSON.parse(body); } catch (_) { payload = body; }
+  }
+  if (!response.ok) {
+    const message = payload && typeof payload === 'object' ? payload.error : null;
+    throw new Error(message || `Request failed (${response.status})`);
+  }
+  return payload;
 }
 
 async function initializeAuth() {

@@ -2118,7 +2118,7 @@ async fn discover_openclaw(
         )
     };
     let gateway_url = validate_local_openclaw_url(&gateway_url)?;
-    let gateway_reachable = openclaw_gateway_reachable(&gateway_url).await;
+    let gateway_reachable = openclaw_gateway_reachable(&state.webhook_client, &gateway_url).await;
     let version_result = run_openclaw_command(&["--version"]).await;
     let cli_available = version_result.is_ok();
     let version = version_result.ok().map(|value| value.trim().to_owned());
@@ -2232,6 +2232,7 @@ async fn connect_openclaw(
         .map(|agent| agent.openclaw_agent_id.clone())
         .collect::<Vec<_>>();
     let install_result = install_openclaw_connector(
+        &state.webhook_client,
         &gateway_url,
         &haco_url,
         &inbound_token,
@@ -2401,22 +2402,23 @@ fn openclaw_username(agent_id: &str) -> String {
     format!("openclaw-{slug}")
 }
 
-async fn openclaw_gateway_reachable(gateway_url: &str) -> bool {
-    let Ok(parsed) = Url::parse(gateway_url) else {
+fn openclaw_gateway_ready_url(gateway_url: &str) -> Option<Url> {
+    let Ok(mut url) = Url::parse(gateway_url) else {
+        return None;
+    };
+    url.set_path("/readyz");
+    url.set_query(None);
+    url.set_fragment(None);
+    Some(url)
+}
+
+async fn openclaw_gateway_reachable(client: &reqwest::Client, gateway_url: &str) -> bool {
+    let Some(url) = openclaw_gateway_ready_url(gateway_url) else {
         return false;
     };
-    let Some(host) = parsed.host_str() else {
-        return false;
-    };
-    let port = parsed
-        .port_or_known_default()
-        .unwrap_or(if parsed.scheme() == "https" { 443 } else { 80 });
-    timeout(
-        Duration::from_secs(2),
-        tokio::net::TcpStream::connect((host, port)),
-    )
-    .await
-    .is_ok_and(|result| result.is_ok())
+    timeout(Duration::from_secs(2), client.get(url).send())
+        .await
+        .is_ok_and(|result| result.is_ok_and(|response| response.status().is_success()))
 }
 
 async fn run_openclaw_command(args: &[&str]) -> Result<String, String> {
@@ -2825,6 +2827,7 @@ fn restrict_openclaw_backup_permissions(_path: &FilePath, _directory: bool) -> R
 }
 
 async fn install_openclaw_connector(
+    webhook_client: &reqwest::Client,
     gateway_url: &str,
     haco_url: &str,
     inbound_token: &str,
@@ -2927,7 +2930,7 @@ async fn install_openclaw_connector(
             )
         })?;
     for _ in 0..15 {
-        if openclaw_gateway_reachable(gateway_url).await {
+        if openclaw_gateway_reachable(webhook_client, gateway_url).await {
             return Ok(config_backup);
         }
         tokio::time::sleep(Duration::from_secs(1)).await;
@@ -7162,6 +7165,17 @@ mod tests {
         assert!(validate_local_openclaw_url("http://localhost:18789").is_ok());
         assert!(validate_local_openclaw_url("https://openclaw.example.com").is_err());
         assert!(validate_local_openclaw_url("file:///tmp/openclaw").is_err());
+    }
+
+    #[test]
+    fn openclaw_readiness_uses_the_gateway_ready_endpoint() {
+        assert_eq!(
+            openclaw_gateway_ready_url("http://127.0.0.1:18789/hooks")
+                .unwrap()
+                .as_str(),
+            "http://127.0.0.1:18789/readyz"
+        );
+        assert!(openclaw_gateway_ready_url("not a URL").is_none());
     }
 
     #[test]
