@@ -2518,3 +2518,148 @@ body {
   .settings-personal { width: 100%; padding: 21px 13px max(24px, env(safe-area-inset-bottom)); }.settings-admin-entry { align-items: flex-start; flex-direction: column; }.settings-admin-entry .btn-primary { width: 100%; }.workspace-modal-card, .settings-dialog { background: var(--glass-raised); }.settings-user { grid-template-columns: 32px minmax(0, 1fr); }.settings-user-actions { grid-column: 2 / -1; justify-content: flex-start; }
   .member-role-picker-row { grid-template-columns: 1fr; }.member-role-picker-row select { margin-left: 0; }
 }
+
+/* Composer layout refinement: keep writing, formatting, and send actions distinct. */
+.composer-shell {
+  padding-bottom: 20px;
+}
+
+.composer {
+  grid-template-columns: 42px minmax(0, 1fr) auto;
+  align-items: stretch;
+  gap: 8px;
+  width: min(790px, 100%);
+  padding: 8px;
+  border-radius: 20px;
+}
+
+.composer-action {
+  align-self: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+}
+
+.composer-editor {
+  display: grid;
+  min-width: 0;
+  align-content: center;
+  gap: 3px;
+}
+
+.composer textarea {
+  min-height: 32px;
+  padding: 6px 3px 3px;
+  line-height: 1.4;
+}
+
+.composer-hint {
+  display: block;
+  min-height: 12px;
+  padding: 0 3px;
+  color: var(--text-muted);
+  font-size: 9px;
+  line-height: 1.2;
+}
+
+.composer-tools {
+  align-self: center;
+  gap: 6px;
+  padding: 0 0 0 8px;
+  border-left: 1px solid var(--border-subtle);
+}
+
+.composer-mode-button,
+.composer-tools button[type="submit"] {
+  width: 38px;
+  height: 38px;
+  border-radius: 12px;
+}
+
+.composer.rich-mode {
+  align-items: start;
+}
+
+.composer.rich-mode .composer-editor {
+  gap: 6px;
+}
+
+.composer.rich-mode textarea {
+  min-height: 112px;
+  padding-top: 4px;
+}
+
+.composer.rich-mode .composer-tools {
+  align-self: start;
+  padding-top: 2px;
+}
+
+.composer.rich-mode .composer-hint {
+  max-width: none;
+  padding-top: 0;
+}
+
+.pending-attachments {
+  width: min(790px, 100%);
+  margin-inline: auto;
+}
+
+.message-fallback {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.message-fallback .message-bubble {
+  border-color: rgba(236, 169, 89, 0.42);
+}
+
+@media (max-width: 760px) {
+  .composer-shell {
+    padding-bottom: max(10px, env(safe-area-inset-bottom));
+  }
+
+  .composer {
+    grid-template-columns: 36px minmax(0, 1fr) 74px;
+    align-items: center;
+    gap: 5px;
+    padding: 5px;
+    border-radius: 16px;
+  }
+
+  .composer-editor {
+    min-height: 36px;
+  }
+
+  .composer textarea {
+    min-height: 36px;
+    padding: 7px 2px;
+  }
+
+  .composer-hint {
+    display: none;
+  }
+
+  .composer-action,
+  .composer-mode-button,
+  .composer-tools button[type="submit"] {
+    width: 34px;
+    height: 34px;
+  }
+
+  .composer-tools {
+    gap: 4px;
+    padding-left: 4px;
+  }
+
+  .composer.rich-mode {
+    align-items: start;
+  }
+
+  .composer.rich-mode .composer-tools {
+    align-self: start;
+    padding-top: 1px;
+  }
+
+  .composer.rich-mode textarea {
+    min-height: 88px;
+  }
+}

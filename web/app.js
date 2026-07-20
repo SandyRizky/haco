@@ -852,7 +852,14 @@ function renderMessages() {
   const visibleMessages = isSharedConversation()
     ? state.messages.filter((message) => !message.parent_message_id)
     : state.messages;
-  visibleMessages.forEach((message) => { try { dom.feed.append(createMessageNode(message)); } catch (_) {} });
+  visibleMessages.forEach((message) => {
+    try {
+      dom.feed.append(createMessageNode(message));
+    } catch (error) {
+      console.error('Unable to render chat message', { messageId: message?.id, error });
+      dom.feed.append(createMessageFallbackNode(message));
+    }
+  });
   if (!visibleMessages.length) dom.feed.innerHTML = '<div class="empty-feed"><svg width="36" height="36" viewBox="0 0 36 36" fill="none" aria-hidden="true"><circle cx="18" cy="13" r="5" stroke="currentColor" stroke-width="1.5"/><path d="M4 32c0-5.5 4-10 14-10s14 4.5 14 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M18 1v4M18 22v4M6 6l3 3M27 9l-3 3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" opacity="0.4"/></svg><strong>No messages yet</strong><p>Start the conversation with a person or agent.</p></div>';
   dom.loadOlder.hidden = !state.hasOlder;
   const latestMessage = visibleMessages[visibleMessages.length - 1];
@@ -869,6 +876,28 @@ function renderMessages() {
   }
   if (!state.loadingOlder && scrollWasAtBottom) dom.feed.scrollTop = dom.feed.scrollHeight;
   state.loadingOlder = false;
+}
+
+function createMessageFallbackNode(message) {
+  const sender = message?.sender || {};
+  const article = document.createElement('article');
+  article.className = `message message-fallback${sender.id === state.currentUser?.id ? ' own' : ''}`;
+  const content = document.createElement('div');
+  content.className = 'message-content';
+  const meta = document.createElement('div');
+  meta.className = 'message-meta';
+  const name = document.createElement('strong');
+  name.textContent = sender.display_name || 'Unknown sender';
+  const bubble = document.createElement('div');
+  bubble.className = 'message-bubble';
+  const body = document.createElement('p');
+  body.className = 'message-body';
+  body.textContent = message?.body || 'This message could not be displayed.';
+  meta.append(name);
+  bubble.append(body);
+  content.append(meta, bubble);
+  article.append(content);
+  return article;
 }
 
 function appendQuotedReply(article, message) {
@@ -893,7 +922,6 @@ function createMessageNode(message, options = {}) {
   article.querySelector('.avatar').textContent = initialsFor(message.sender.display_name);
   applyPresence(article.querySelector('.presence-bar'), message.sender);
   article.querySelector('.message-meta strong').textContent = message.sender.display_name;
-  article.querySelector('.principal-kind').hidden = true;
   article.querySelector('time').textContent = new Intl.DateTimeFormat([], { hour: '2-digit', minute: '2-digit' }).format(new Date(message.created_at));
   article.querySelector('.message-body').innerHTML = renderMessageBody(message.body);
   article.classList.toggle('deleted', Boolean(message.is_deleted));
@@ -1398,7 +1426,7 @@ function setRichMode(enabled) {
   dom.composerMode.setAttribute('aria-label', enabled ? 'Use compact composer' : 'Enable rich composer');
   dom.composerMode.title = enabled ? 'Use compact composer' : 'Expand composer';
   dom.richComposerTools.hidden = !enabled;
-  dom.composerHint.textContent = enabled ? 'Rich message mode · Enter adds a new line · Ctrl + Enter sends' : 'Enter to send · Shift + Enter for a new line';
+  dom.composerHint.textContent = enabled ? 'Rich mode · Enter adds a line · Ctrl / ⌘ + Enter sends' : 'Enter to send · Shift + Enter for a new line';
   resizeComposer();
   dom.input.focus();
 }
