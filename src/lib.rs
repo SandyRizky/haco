@@ -36,12 +36,19 @@ pub struct Conversation {
     pub kind: ConversationKind,
     pub title: String,
     pub description: Option<String>,
+    pub icon: Option<String>,
     pub is_private: bool,
     pub archived: bool,
     pub member_count: u32,
     pub unread_count: u32,
     pub last_message_preview: Option<String>,
     pub last_message_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConversationMember {
+    pub principal: Principal,
+    pub role: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

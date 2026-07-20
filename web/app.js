@@ -1,17 +1,19 @@
-const state = { conversations: [], selected: null, messages: [], currentUser: null, replyTo: null, threadRoot: null, socket: null, filter: 'all', adminToken: null, adminSettings: null, settingsTab: 'workspace', authStatus: null, users: [], modalSubmit: null, typingTimer: null, draftTimer: null, remoteTyping: new Map(), pendingAttachments: [], hasOlder: false, notifications: [], pushRegistration: null, pushConfiguration: null, openclawDiscovery: null, popoverMessage: null };
+const state = { conversations: [], selected: null, messages: [], currentUser: null, replyTo: null, threadRoot: null, socket: null, filter: 'all', adminToken: null, adminSettings: null, settingsTab: 'workspace', settingsView: 'personal', authStatus: null, users: [], conversationMembers: {}, modalSubmit: null, typingTimer: null, draftTimer: null, remoteTyping: new Map(), pendingAttachments: [], hasOlder: false, notifications: [], pushRegistration: null, pushConfiguration: null, openclawDiscovery: null, popoverMessage: null, richMode: false };
 const dom = {
-  list: document.querySelector('#conversations'), feed: document.querySelector('#messages'), title: document.querySelector('#conversation-title'),
+  list: document.querySelector('#conversations'), forumList: document.querySelector('#forum-conversations'), directList: document.querySelector('#direct-conversations'), forumSection: document.querySelector('#forum-section'), directSection: document.querySelector('#direct-section'), feed: document.querySelector('#messages'), title: document.querySelector('#conversation-title'),
   kind: document.querySelector('#conversation-kind'), description: document.querySelector('#conversation-description'), status: document.querySelector('#connection-status'),
-  dot: document.querySelector('#connection-dot'), input: document.querySelector('#message-input'), composer: document.querySelector('#composer'), search: document.querySelector('#search'),
+  input: document.querySelector('#message-input'), composer: document.querySelector('#composer'), search: document.querySelector('#search'),
   searchResults: document.querySelector('#search-results'), searchResultList: document.querySelector('#search-result-list'), searchSummary: document.querySelector('#search-summary'),
   replyState: document.querySelector('#reply-state'), replyCopy: document.querySelector('#reply-copy'), cancelReply: document.querySelector('#cancel-reply'),
   sidebar: document.querySelector('#sidebar'), mobileBackdrop: document.querySelector('#mobile-backdrop'), openSidebar: document.querySelector('#open-sidebar'), closeSidebar: document.querySelector('#close-sidebar'),
-  closeSearch: document.querySelector('#close-search'), conversationCount: document.querySelector('#conversation-count'), channelSymbol: document.querySelector('#channel-symbol'),
-  profileName: document.querySelector('#profile-name'), profileAvatar: document.querySelector('#profile-avatar'), filters: [...document.querySelectorAll('.filter')],
+  closeSearch: document.querySelector('#close-search'), conversationCount: document.querySelector('#conversation-count'), channelSymbol: document.querySelector('#channel-symbol'), conversationPresence: document.querySelector('#conversation-presence'),
+  profileName: document.querySelector('#profile-name'), profileAvatar: document.querySelector('#profile-avatar'), profilePresence: document.querySelector('#profile-presence'), filters: [...document.querySelectorAll('.filter')],
   appShell: document.querySelector('.app-shell'), threadPanel: document.querySelector('#thread-panel'), threadRoot: document.querySelector('#thread-root'),
   threadMessages: document.querySelector('#thread-messages'), threadCount: document.querySelector('#thread-count'), closeThread: document.querySelector('#close-thread'),
   threadComposer: document.querySelector('#thread-composer'), threadInput: document.querySelector('#thread-input'),
   openSettings: document.querySelector('#open-settings'), settingsOverlay: document.querySelector('#settings-overlay'), closeSettings: document.querySelector('#close-settings'),
+  settingsPersonal: document.querySelector('#settings-personal'), settingsEyebrow: document.querySelector('#settings-eyebrow'), showPersonalSettings: document.querySelector('#show-personal-settings'), openWorkspaceSettings: document.querySelector('#open-workspace-settings'), themePreference: document.querySelector('#theme-preference'),
+  personalProfileName: document.querySelector('#personal-profile-name'), personalProfileAvatar: document.querySelector('#personal-profile-avatar'), personalProfilePresence: document.querySelector('#personal-profile-presence'), personalProfileStatus: document.querySelector('#personal-profile-status'),
   settingsUnlock: document.querySelector('#settings-unlock'), settingsWorkspace: document.querySelector('#settings-workspace'), settingsUnlockForm: document.querySelector('#settings-unlock-form'),
   adminToken: document.querySelector('#admin-token'), settingsUnlockError: document.querySelector('#settings-unlock-error'), settingsForm: document.querySelector('#settings-form'),
   settingsFormError: document.querySelector('#settings-form-error'), settingsSaveStatus: document.querySelector('#settings-save-status'), settingsLock: document.querySelector('#settings-lock'),
@@ -20,8 +22,10 @@ const dom = {
   authError: document.querySelector('#auth-error'), loginForm: document.querySelector('#login-form'), setupForm: document.querySelector('#setup-form'), registerForm: document.querySelector('#register-form'), resetForm: document.querySelector('#reset-form'), inviteForm: document.querySelector('#invite-form'),
   authLinks: document.querySelector('#auth-links'), logoutButton: document.querySelector('#logout-button'), changePasswordButton: document.querySelector('#change-password-button'),
   currentPassword: document.querySelector('#current-password'), newPassword: document.querySelector('#new-password'), mockAdminLogin: document.querySelector('#mock-admin-login'),
-  newConversation: document.querySelector('#new-conversation'), manageConversation: document.querySelector('#manage-conversation'), typingIndicator: document.querySelector('#typing-indicator'),
+  newForum: document.querySelector('#new-forum'), newDirectMessage: document.querySelector('#new-direct-message'), manageConversation: document.querySelector('#manage-conversation'), typingIndicator: document.querySelector('#typing-indicator'),
+  conversationMembers: document.querySelector('#conversation-members'), conversationMemberCount: document.querySelector('#conversation-member-count'), membersPopover: document.querySelector('#members-popover'),
   attachmentButton: document.querySelector('#attachment-button'), attachmentInput: document.querySelector('#attachment-input'), pendingAttachments: document.querySelector('#pending-attachments'), loadOlder: document.querySelector('#load-older'),
+  composerMode: document.querySelector('#composer-mode'), richComposerTools: document.querySelector('#rich-composer-tools'), bulletList: document.querySelector('#bullet-list'), numberList: document.querySelector('#number-list'), composerHint: document.querySelector('#composer-hint'),
   notificationsButton: document.querySelector('#notifications-button'), notificationCount: document.querySelector('#notification-count'), notificationsPanel: document.querySelector('#notifications-panel'), notificationList: document.querySelector('#notification-list'), closeNotifications: document.querySelector('#close-notifications'),
   pushToggle: document.querySelector('#push-toggle'), pushTest: document.querySelector('#push-test'), pushStatus: document.querySelector('#push-status'),
   searchConversation: document.querySelector('#search-conversation'), searchSender: document.querySelector('#search-sender'), searchMedia: document.querySelector('#search-media'), threadSubscribe: document.querySelector('#thread-subscribe'),
@@ -39,6 +43,34 @@ const iconFor = (kind) => ({ channel: '#', group: '◉', direct: '@' }[kind] || 
 const labelFor = (kind) => ({ channel: 'Forum', group: 'Group chat', direct: 'Direct message' }[kind] || 'Conversation');
 const escapeHtml = (value) => value.replace(/[&<>"']/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character]));
 const currentConversation = () => state.conversations.find((conversation) => conversation.id === state.selected);
+const isSharedConversation = (conversation = currentConversation()) => ['channel', 'group'].includes(conversation?.kind);
+const isOnline = (principal) => ['online', 'working'].includes(principal?.presence);
+const initialsFor = (name = '') => name.trim().split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]).join('').toUpperCase() || 'H';
+const symbolFor = (conversation) => conversation?.icon?.trim() || iconFor(conversation?.kind);
+const conversationRoleForCurrentUser = (conversation = currentConversation()) => state.conversationMembers[conversation?.id]?.find((member) => member.principal?.id === state.currentUser?.id)?.role || null;
+const canManageConversation = (conversation = currentConversation()) => Boolean(isSharedConversation(conversation) && (state.currentUser?.access_role === 'admin' || ['owner', 'admin'].includes(conversationRoleForCurrentUser(conversation))));
+const titleForRole = (member) => {
+  const role = member?.role;
+  if (role) return role.replace(/^./, (letter) => letter.toUpperCase());
+  const principal = member?.principal || member;
+  return principal?.kind === 'agent' ? 'Agent' : principal?.access_role === 'admin' ? 'Workspace admin' : 'Member';
+};
+
+function applyPresence(element, principal) {
+  if (!element) return;
+  element.className = `presence-bar ${principal?.kind === 'agent' ? 'agent' : 'human'} ${isOnline(principal) ? 'online' : 'offline'}`;
+  element.title = `${principal?.display_name || 'Member'} is ${isOnline(principal) ? 'online' : 'offline'}`;
+}
+
+function applyTheme(theme) {
+  const resolved = theme === 'dark' ? 'dark' : 'bright';
+  document.documentElement.dataset.theme = resolved;
+  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', resolved === 'dark' ? '#1c276d' : '#8297ff');
+  if (dom.themePreference) dom.themePreference.value = resolved;
+  try { localStorage.setItem('haco-theme', resolved); } catch (_) {}
+}
+
+try { applyTheme(localStorage.getItem('haco-theme') || document.documentElement.dataset.theme); } catch (_) { applyTheme(document.documentElement.dataset.theme); }
 
 async function request(path, options = {}) {
   const { headers = {}, ...rest } = options;
@@ -186,17 +218,7 @@ async function openSettings() {
   dom.settingsOverlay.hidden = false;
   document.body.classList.add('settings-visible');
   dom.settingsUnlockError.hidden = true;
-  if (state.adminSettings) { showSettingsWorkspace(); return; }
-  if (state.currentUser?.access_role === 'admin') {
-    try {
-      state.adminSettings = await request('/api/admin/settings');
-      showSettingsWorkspace();
-      return;
-    } catch (error) {
-      dom.settingsUnlockError.textContent = error.message;
-    }
-  }
-  window.setTimeout(() => dom.adminToken.focus(), 80);
+  showPersonalSettings();
 }
 
 function closeSettings() {
@@ -205,11 +227,50 @@ function closeSettings() {
   dom.settingsSaveStatus.textContent = '';
 }
 
+function showPersonalSettings() {
+  state.settingsView = 'personal';
+  dom.settingsEyebrow.textContent = 'My information';
+  dom.settingsPersonal.hidden = false;
+  dom.settingsUnlock.hidden = true;
+  dom.settingsWorkspace.hidden = true;
+  dom.showPersonalSettings.hidden = true;
+  if (!state.currentUser) return;
+  const presence = isOnline(state.currentUser) ? 'Online' : 'Offline';
+  dom.personalProfileName.textContent = state.currentUser.display_name;
+  dom.personalProfileAvatar.textContent = initialsFor(state.currentUser.display_name);
+  dom.personalProfileStatus.textContent = presence;
+  applyPresence(dom.personalProfilePresence, state.currentUser);
+}
+
+async function openWorkspaceAdministration(tab = state.settingsTab) {
+  state.settingsView = 'administration';
+  state.settingsTab = tab;
+  dom.settingsEyebrow.textContent = 'Workspace administration';
+  dom.settingsPersonal.hidden = true;
+  dom.showPersonalSettings.hidden = false;
+  dom.settingsUnlockError.hidden = true;
+  if (state.adminSettings) { showSettingsWorkspace(); return; }
+  if (state.currentUser?.access_role === 'admin') {
+    try {
+      state.adminSettings = await request('/api/admin/settings');
+      showSettingsWorkspace();
+      return;
+    } catch (error) {
+      dom.settingsUnlockError.textContent = error.message;
+      dom.settingsUnlockError.hidden = false;
+    }
+  }
+  dom.settingsWorkspace.hidden = true;
+  dom.settingsUnlock.hidden = false;
+  window.setTimeout(() => dom.adminToken.focus(), 80);
+}
+
 function lockSettings() {
   state.adminToken = null;
   state.adminSettings = null;
   dom.adminToken.value = '';
   dom.settingsForm.reset();
+  dom.settingsPersonal.hidden = true;
   dom.settingsWorkspace.hidden = true;
   dom.settingsUnlock.hidden = false;
   window.setTimeout(() => dom.adminToken.focus(), 60);
@@ -238,6 +299,10 @@ async function unlockSettings(event) {
 }
 
 async function showSettingsWorkspace() {
+  state.settingsView = 'administration';
+  dom.settingsEyebrow.textContent = 'Workspace administration';
+  dom.settingsPersonal.hidden = true;
+  dom.showPersonalSettings.hidden = false;
   dom.settingsUnlock.hidden = true;
   dom.settingsWorkspace.hidden = false;
   fillSettingsForm();
@@ -301,7 +366,7 @@ function renderOpenClawConnections(discovery) {
   dom.openclawConnections.innerHTML = discovery.connections.map((connection) => {
     const conversations = connection.conversation_ids.map((id) => discovery.conversations.find((item) => item.id === id)?.title || id).join(', ');
     const detail = connection.last_error || (connection.test_pending ? 'Connection test is waiting for the agent reply…' : `${connection.response_mode === 'always' ? 'Responds to every message' : 'Responds when mentioned'} · ${conversations}`);
-    return `<div class="openclaw-connection ${connection.status === 'error' ? 'error' : ''}"><span class="openclaw-connection-avatar">${escapeHtml(connection.display_name.slice(0, 1).toUpperCase())}</span><span><strong>${escapeHtml(connection.display_name)}</strong><small>${escapeHtml(detail)}</small></span><span class="openclaw-connection-actions"><button class="settings-inline-button" type="button" data-test-openclaw="${escapeHtml(connection.openclaw_agent_id)}">Test</button><button class="settings-inline-button" type="button" data-disconnect-openclaw="${escapeHtml(connection.openclaw_agent_id)}">Disconnect</button></span></div>`;
+    return `<div class="openclaw-connection ${connection.status === 'error' ? 'error' : ''}"><span class="avatar-stack openclaw-avatar-stack"><span class="openclaw-connection-avatar">${escapeHtml(initialsFor(connection.display_name))}</span><span class="presence-bar agent ${connection.status === 'connected' ? 'online' : 'offline'}"></span></span><span><strong>${escapeHtml(connection.display_name)}</strong><small>${escapeHtml(detail)}</small></span><span class="openclaw-connection-actions"><button class="settings-inline-button" type="button" data-test-openclaw="${escapeHtml(connection.openclaw_agent_id)}">Test</button><button class="settings-inline-button" type="button" data-disconnect-openclaw="${escapeHtml(connection.openclaw_agent_id)}">Disconnect</button></span></div>`;
   }).join('') || '<p class="settings-help">No connected agents yet. The wizard can connect all agents on this server in one pass.</p>';
   dom.openclawConnections.querySelectorAll('[data-test-openclaw]').forEach((button) => button.addEventListener('click', async () => {
     button.disabled = true;
@@ -353,7 +418,7 @@ async function openOpenClawWizard() {
     if (!discovery.cli_available) throw new Error(discovery.notice || 'OpenClaw CLI was not found.');
     if (!discovery.agents.length) throw new Error('No OpenClaw agents were discovered on this server.');
     const alreadyConnected = new Set(discovery.connections.map((connection) => connection.openclaw_agent_id));
-    const agentOptions = discovery.agents.map((agent) => `<label class="wizard-agent-option"><input type="checkbox" name="openclaw_agents" value="${escapeHtml(agent.id)}" ${alreadyConnected.has(agent.id) ? 'checked' : ''}/><span class="openclaw-connection-avatar">${escapeHtml(agent.display_name.slice(0, 1).toUpperCase())}</span><span><strong>${escapeHtml(agent.display_name)}</strong><small>${escapeHtml(agent.workspace || agent.id)}</small></span></label>`).join('');
+    const agentOptions = discovery.agents.map((agent) => `<label class="wizard-agent-option"><input type="checkbox" name="openclaw_agents" value="${escapeHtml(agent.id)}" ${alreadyConnected.has(agent.id) ? 'checked' : ''}/><span class="openclaw-connection-avatar">${escapeHtml(initialsFor(agent.display_name))}</span><span><strong>${escapeHtml(agent.display_name)}</strong><small>${escapeHtml(agent.workspace || agent.id)}</small></span></label>`).join('');
     const conversationOptions = discovery.conversations.filter((conversation) => !conversation.archived && conversation.kind !== 'direct').map((conversation) => `<label><input type="checkbox" name="openclaw_conversations" value="${escapeHtml(conversation.id)}" ${conversation.kind === 'channel' ? 'checked' : ''}/><span class="settings-user-avatar">${escapeHtml(iconFor(conversation.kind))}</span><span><strong>${escapeHtml(conversation.title)}</strong><small>${escapeHtml(labelFor(conversation.kind))}</small></span></label>`).join('');
     openWorkspaceModal('Connect local OpenClaw', `<div class="wizard-progress"><span class="active">1 · Discovered</span><span class="active">2 · Choose access</span><span>3 · Connect</span></div><div class="wizard-discovery"><div><strong>${discovery.cli_available ? 'OpenClaw found' : 'Not found'}</strong><small>${escapeHtml(discovery.version || 'Version unavailable')}</small></div><div><strong>${discovery.gateway_reachable ? 'Gateway online' : 'Gateway not reachable'}</strong><small>${escapeHtml(discovery.gateway_url)}</small></div></div><label class="settings-field"><span>Local Gateway URL</span><small>Automatic setup is restricted to this server.</small><input name="gateway_url" type="url" value="${escapeHtml(discovery.gateway_url)}" required /></label><div><span class="modal-label">Agents to connect</span><div class="wizard-agent-picker">${agentOptions}</div></div><div><span class="modal-label">Forum and group access</span><small class="settings-help">Each agent automatically gets a private DM with you. Choose any shared spaces it may also access.</small><div class="member-picker">${conversationOptions}</div></div><label class="settings-field"><span>When should agents respond in shared spaces?</span><select name="response_mode"><option value="mentions">Only when @mentioned (recommended)</option><option value="always">Every message in selected spaces</option></select></label><p class="wizard-note">Before changing OpenClaw, Haco saves a protected backup of the active configuration and any included configuration files. It then creates stable agent accounts, private DMs, permissions, credentials, routing, the local connector, and restarts the Gateway.</p>`, async (form) => {
       const selectedAgentIds = [...form.querySelectorAll('[name="openclaw_agents"]:checked')].map((input) => input.value);
@@ -415,46 +480,57 @@ function closeWorkspaceModal() {
   state.modalSubmit = null;
 }
 
-const memberChecklist = (selected = [], excludeCurrent = false) => `<div class="member-picker">${state.users.filter((user) => !user.disabled && (!excludeCurrent || user.id !== state.currentUser?.id)).map((user) => `<label><input type="checkbox" name="member_ids" value="${escapeHtml(user.id)}" ${selected.includes(user.id) ? 'checked' : ''}/><span class="settings-user-avatar ${user.kind === 'agent' ? 'agent' : ''}">${escapeHtml(user.display_name[0])}</span><span><strong>${escapeHtml(user.display_name)}</strong><small>@${escapeHtml(user.username)}</small></span></label>`).join('')}</div>`;
+const memberChecklist = (selected = [], roles = null) => {
+  const ownerCount = Object.values(roles || {}).filter((role) => role === 'owner').length;
+  const roleOptions = (role, locked) => `<select data-member-role="${escapeHtml(role.id)}" aria-label="Role for ${escapeHtml(role.display_name)}" ${locked ? 'disabled' : ''}>${['owner', 'admin', 'moderator', 'member'].map((option) => `<option value="${option}" ${option === role.value ? 'selected' : ''}>${option.replace(/^./, (letter) => letter.toUpperCase())}</option>`).join('')}</select>`;
+  return `<div class="member-picker ${roles ? 'member-role-picker' : ''}">${state.users.filter((user) => !user.disabled).map((user) => {
+    const role = roles?.[user.id];
+    const isFinalOwner = role === 'owner' && ownerCount === 1;
+    const control = roles ? roleOptions({ id: user.id, display_name: user.display_name, value: role || 'member' }, isFinalOwner) : '';
+    const secondary = role ? role.replace(/^./, (letter) => letter.toUpperCase()) : (isOnline(user) ? 'Online' : 'Offline');
+    const label = `<label><input type="checkbox" name="member_ids" value="${escapeHtml(user.id)}" ${selected.includes(user.id) ? 'checked' : ''} ${isFinalOwner ? 'disabled' : ''}/><span class="avatar-stack picker-avatar-stack"><span class="settings-user-avatar ${user.kind === 'agent' ? 'agent' : ''}">${escapeHtml(initialsFor(user.display_name))}</span><span class="presence-bar ${user.kind === 'agent' ? 'agent' : 'human'} ${isOnline(user) ? 'online' : 'offline'}"></span></span><span><strong>${escapeHtml(user.display_name)}</strong><small>${escapeHtml(secondary)}</small></span></label>`;
+    return roles ? `<div class="member-role-picker-row">${label}${control}</div>` : label;
+  }).join('')}</div>`;
+};
 
-async function openNewConversation() {
+async function openNewForum() {
   if (!state.users.length) state.users = await request('/api/users');
-  openWorkspaceModal('New conversation', `<div class="settings-field-grid"><label class="settings-field"><span>Type</span><select name="kind"><option value="direct">Direct message</option><option value="group">Group chat</option>${state.currentUser?.access_role === 'admin' ? '<option value="channel">Forum</option>' : ''}</select></label><label class="settings-field" data-conversation-name hidden><span>Name</span><input name="title" maxlength="80" /></label></div><label class="settings-field"><span>Topic or description</span><input name="description" /></label><label class="settings-toggle"><span><strong>Private conversation</strong><small>Only selected members can access it.</small></span><input name="is_private" type="checkbox" checked/><i></i></label><div><span class="modal-label" data-member-label>Recipient</span>${memberChecklist([], true)}</div>`, async (form) => {
-    const memberIds = [...form.querySelectorAll('[name="member_ids"]:checked')].map((item) => item.value);
-    if (form.kind.value === 'direct' && memberIds.length !== 1) throw new Error('Choose exactly one person or agent for this DM.');
-    const payload = { kind: form.kind.value, title: form.kind.value === 'direct' ? '' : form.title.value, description: form.description.value || null, is_private: form.kind.value === 'direct' || form.is_private.checked, member_ids: memberIds };
+  openWorkspaceModal('Create forum', `<div class="settings-field-grid"><label class="settings-field"><span>Forum name</span><input name="title" maxlength="80" required placeholder="e.g. launch-planning" /></label><label class="settings-field"><span>Forum picture</span><input name="icon" maxlength="4" placeholder="#" aria-describedby="forum-icon-help" /></label></div><p id="forum-icon-help" class="settings-help">Use a short icon or emoji; leave empty for the default forum mark.</p><label class="settings-field"><span>Description</span><textarea name="description" rows="3" placeholder="What is this forum for?"></textarea></label><div><span class="modal-label">Invite members</span>${memberChecklist([state.currentUser.id])}</div><p class="settings-help forum-owner-note">You are added automatically as the forum owner.</p>`, async (form) => {
+    const payload = { kind: 'channel', title: form.title.value, description: form.description.value || null, icon: form.icon.value || null, is_private: false, member_ids: [...form.querySelectorAll('[name="member_ids"]:checked')].map((item) => item.value) };
     const conversation = await request('/api/conversations', { method: 'POST', body: JSON.stringify(payload) });
     state.conversations = await request('/api/conversations');
+    state.conversationMembers = {};
     closeWorkspaceModal(); await selectConversation(conversation.id);
-  });
-  const form = dom.workspaceModalBody.closest('form');
-  const kind = form.elements.kind;
-  const syncKind = () => {
-    const direct = kind.value === 'direct';
-    const nameField = form.querySelector('[data-conversation-name]');
-    nameField.hidden = direct;
-    form.elements.title.required = !direct;
-    form.querySelector('[data-member-label]').textContent = direct ? 'Recipient' : 'Members';
-    if (direct) {
-      const checked = [...form.querySelectorAll('[name="member_ids"]:checked')];
-      checked.slice(1).forEach((input) => { input.checked = false; });
-    }
-  };
-  kind.addEventListener('change', syncKind);
-  form.querySelectorAll('[name="member_ids"]').forEach((input) => input.addEventListener('change', () => {
-    if (kind.value === 'direct' && input.checked) form.querySelectorAll('[name="member_ids"]').forEach((other) => { if (other !== input) other.checked = false; });
-  }));
-  syncKind();
+  }, 'Create forum');
+}
+
+async function openNewDirectMessage() {
+  if (!state.users.length) state.users = await request('/api/users');
+  const people = state.users.filter((user) => !user.disabled && user.id !== state.currentUser?.id);
+  openWorkspaceModal('New direct message', `<p class="settings-help">Choose one person or agent to start a private conversation.</p><div class="direct-picker">${people.map((user) => `<label><input type="radio" name="member_id" value="${escapeHtml(user.id)}" required /><span class="avatar-stack"><span class="settings-user-avatar ${user.kind === 'agent' ? 'agent' : ''}">${escapeHtml(initialsFor(user.display_name))}</span><span class="presence-bar ${user.kind === 'agent' ? 'agent' : 'human'} ${isOnline(user) ? 'online' : 'offline'}"></span></span><span><strong>${escapeHtml(user.display_name)}</strong><small>${escapeHtml(user.kind === 'agent' ? 'Connected agent' : isOnline(user) ? 'Online' : 'Offline')}</small></span></label>`).join('') || '<p class="settings-help">No one else is available to message.</p>'}</div>`, async (form) => {
+    const memberId = form.member_id.value;
+    const peer = people.find((user) => user.id === memberId);
+    if (!peer) throw new Error('Choose a person or agent.');
+    const existing = state.conversations.find((conversation) => conversation.kind === 'direct' && conversation.title === peer.display_name);
+    if (existing) { closeWorkspaceModal(); await selectConversation(existing.id); return; }
+    const conversation = await request('/api/conversations', { method: 'POST', body: JSON.stringify({ kind: 'direct', title: peer.display_name, description: null, is_private: true, member_ids: [state.currentUser.id, peer.id] }) });
+    state.conversations = await request('/api/conversations');
+    state.conversationMembers = {};
+    closeWorkspaceModal(); await selectConversation(conversation.id);
+  }, 'Start message');
 }
 
 async function openManageConversation() {
   const conversation = currentConversation();
   if (!conversation) return;
-  const members = await request(`/api/admin/conversations/${conversation.id}/members`);
-  openWorkspaceModal('Manage conversation', `<label class="settings-field"><span>Name</span><input name="title" maxlength="80" value="${escapeHtml(conversation.title)}" required /></label><label class="settings-field"><span>Topic or description</span><input name="description" value="${escapeHtml(conversation.description || '')}" /></label><div class="settings-field-grid"><label class="settings-toggle"><span><strong>Private</strong></span><input name="is_private" type="checkbox" ${conversation.is_private ? 'checked' : ''}/><i></i></label><label class="settings-toggle"><span><strong>Archived</strong></span><input name="archived" type="checkbox" ${conversation.archived ? 'checked' : ''}/><i></i></label></div><div><span class="modal-label">Members</span>${memberChecklist(members.map((member) => member.id))}</div><button id="delete-conversation" class="danger-button" type="button">Delete conversation</button>`, async (form) => {
-    await request(`/api/admin/conversations/${conversation.id}`, { method: 'POST', body: JSON.stringify({ title: form.title.value, description: form.description.value || null, is_private: form.is_private.checked, archived: form.archived.checked }) });
-    await request(`/api/admin/conversations/${conversation.id}/members`, { method: 'POST', body: JSON.stringify({ member_ids: [...form.querySelectorAll('[name="member_ids"]:checked')].map((item) => item.value) }) });
-    closeWorkspaceModal(); state.conversations = await request('/api/conversations'); state.selected = state.conversations[0]?.id || null; if (state.selected) await selectConversation(state.selected); else render();
+  const members = await request(`/api/conversations/${conversation.id}/members`);
+  const memberRoles = Object.fromEntries(members.map((member) => [member.principal.id, member.role]));
+  openWorkspaceModal(`Manage ${labelFor(conversation.kind).toLowerCase()}`, `<div class="settings-field-grid"><label class="settings-field"><span>Name</span><input name="title" maxlength="80" value="${escapeHtml(conversation.title)}" required /></label><label class="settings-field"><span>${conversation.kind === 'channel' ? 'Forum picture' : 'Group picture'}</span><input name="icon" maxlength="4" value="${escapeHtml(conversation.icon || '')}" placeholder="${conversation.kind === 'channel' ? '#' : '◉'}" /></label></div><label class="settings-field"><span>Topic or description</span><input name="description" value="${escapeHtml(conversation.description || '')}" /></label><div class="settings-field-grid"><label class="settings-toggle"><span><strong>Private</strong></span><input name="is_private" type="checkbox" ${conversation.is_private ? 'checked' : ''}/><i></i></label><label class="settings-toggle"><span><strong>Archived</strong></span><input name="archived" type="checkbox" ${conversation.archived ? 'checked' : ''}/><i></i></label></div><div><span class="modal-label">Members and roles</span>${memberChecklist(members.map((member) => member.principal.id), memberRoles)}</div><button id="delete-conversation" class="danger-button" type="button">Delete conversation</button>`, async (form) => {
+    const memberIds = [...form.querySelectorAll('[name="member_ids"]:checked')].map((item) => item.value);
+    const roles = Object.fromEntries([...form.querySelectorAll('[data-member-role]')].map((select) => [select.dataset.memberRole, select.value]));
+    await request(`/api/admin/conversations/${conversation.id}`, { method: 'POST', body: JSON.stringify({ title: form.title.value, description: form.description.value || null, icon: form.icon.value || null, is_private: form.is_private.checked, archived: form.archived.checked }) });
+    await request(`/api/admin/conversations/${conversation.id}/members`, { method: 'POST', body: JSON.stringify({ member_ids: memberIds, roles }) });
+    closeWorkspaceModal(); state.conversations = await request('/api/conversations'); state.conversationMembers = {}; if (state.conversations.some((item) => item.id === conversation.id)) await selectConversation(conversation.id); else { state.selected = state.conversations[0]?.id || null; if (state.selected) await selectConversation(state.selected); else render(); }
   });
   document.querySelector('#delete-conversation').addEventListener('click', async () => { if (!window.confirm(`Delete ${conversation.title} and all of its messages?`)) return; await request(`/api/admin/conversations/${conversation.id}/delete`, { method: 'POST' }); closeWorkspaceModal(); state.conversations = await request('/api/conversations'); state.selected = state.conversations[0]?.id || null; if (state.selected) await selectConversation(state.selected); else render(); });
 }
@@ -524,7 +600,7 @@ function renderSettingsUsers(users) {
       ? `<select class="settings-role-select" data-role-user="${escapeHtml(user.id)}" aria-label="Access role for ${escapeHtml(user.display_name)}">${['admin', 'member', 'guest'].map((option) => `<option value="${option}" ${option === user.access_role ? 'selected' : ''}>${option}</option>`).join('')}</select>`
       : `<b>${role}</b>`;
     const securityAction = state.currentUser?.access_role === 'admin' ? `<button class="settings-inline-button" type="button" data-edit-user="${escapeHtml(user.id)}">Edit</button>${user.kind === 'human' ? `<button class="settings-inline-button" type="button" data-reset-user="${escapeHtml(user.id)}">Reset</button>` : `<button class="settings-inline-button" type="button" data-agent-key="${escapeHtml(user.id)}">New key</button>`}` : '';
-    return `<div class="settings-user ${user.disabled ? 'disabled' : ''}"><span class="settings-user-avatar ${user.kind === 'agent' ? 'agent' : ''}">${escapeHtml(user.display_name.slice(0, 1).toUpperCase())}</span><span><strong>${escapeHtml(user.display_name)}</strong><small>@${escapeHtml(user.username)}${user.disabled ? ' · disabled' : ''}</small></span><span class="settings-user-actions">${roleControl}${securityAction}</span><i class="dot ${user.presence === 'online' || user.presence === 'working' ? 'online' : ''}"></i></div>`;
+    return `<div class="settings-user ${user.disabled ? 'disabled' : ''}"><span class="avatar-stack settings-avatar-stack"><span class="settings-user-avatar ${user.kind === 'agent' ? 'agent' : ''}">${escapeHtml(initialsFor(user.display_name))}</span><span class="presence-bar ${user.kind === 'agent' ? 'agent' : 'human'} ${isOnline(user) ? 'online' : 'offline'}"></span></span><span class="settings-user-copy"><strong>${escapeHtml(user.display_name)}</strong><small>@${escapeHtml(user.username)}${user.disabled ? ' · disabled' : ''}</small></span><span class="settings-user-actions">${roleControl}${securityAction}</span></div>`;
   }).join('') || '<p class="settings-help">No principals found.</p>';
   dom.settingsUsers.querySelectorAll('[data-role-user]').forEach((select) => select.addEventListener('change', async () => {
     select.disabled = true;
@@ -613,8 +689,7 @@ async function boot() {
   try {
     const data = await request('/api/bootstrap');
     state.currentUser = data.current_user;
-    dom.profileName.textContent = data.current_user.display_name;
-    dom.profileAvatar.textContent = data.current_user.display_name.slice(0, 1).toUpperCase();
+    renderProfile();
     state.conversations = data.conversations;
     state.selected = data.conversations[0]?.id || null;
     state.messages = data.initial_messages;
@@ -632,24 +707,53 @@ async function boot() {
 
 function render() { renderConversations(); renderHeader(); renderMessages(); }
 
+function renderProfile() {
+  if (!state.currentUser) return;
+  const presence = isOnline(state.currentUser) ? 'Online' : 'Offline';
+  dom.profileName.textContent = state.currentUser.display_name;
+  dom.profileAvatar.textContent = initialsFor(state.currentUser.display_name);
+  dom.status.textContent = presence;
+  applyPresence(dom.profilePresence, state.currentUser);
+  if (state.settingsView === 'personal') showPersonalSettings();
+}
+
+function directPeerFor(conversation) {
+  return state.users.find((user) => user.id !== state.currentUser?.id && (user.display_name === conversation.title || user.username === conversation.title));
+}
+
 function renderConversations() {
-  dom.list.innerHTML = '';
-  const filtered = state.conversations.filter((conversation) => state.filter === 'all' || conversation.kind === state.filter);
+  dom.forumList.innerHTML = '';
+  dom.directList.innerHTML = '';
+  dom.newForum.hidden = false;
+  const filtered = state.conversations.filter((conversation) => state.filter === 'all' || (state.filter === 'channel' ? ['channel', 'group'].includes(conversation.kind) : conversation.kind === state.filter));
   dom.conversationCount.textContent = `${filtered.length}`;
   filtered.forEach((conversation) => {
     const fragment = document.querySelector('#conversation-template').content.cloneNode(true);
     const button = fragment.querySelector('button');
     button.classList.toggle('active', conversation.id === state.selected);
-    button.querySelector('.conversation-icon').textContent = iconFor(conversation.kind);
+    button.dataset.kind = conversation.kind;
+    const peer = conversation.kind === 'direct' ? directPeerFor(conversation) : null;
+    const icon = button.querySelector('.conversation-icon');
+    icon.textContent = conversation.kind === 'direct' ? initialsFor(peer?.display_name || conversation.title) : symbolFor(conversation);
+    icon.classList.toggle('conversation-icon-direct', conversation.kind === 'direct');
+    icon.classList.toggle('is-default-forum', conversation.kind === 'channel' && !conversation.icon);
+    const presence = button.querySelector('.presence-bar');
+    if (conversation.kind === 'direct' && peer) applyPresence(presence, peer);
+    else presence.hidden = true;
     button.querySelector('strong').textContent = conversation.title;
     button.querySelector('small').textContent = conversation.last_message_preview || conversation.description || 'No messages yet';
     const unread = button.querySelector('.unread-badge');
     unread.hidden = !conversation.unread_count;
     unread.textContent = conversation.unread_count > 99 ? '99+' : conversation.unread_count;
     button.addEventListener('click', () => selectConversation(conversation.id));
-    dom.list.append(fragment);
+    (conversation.kind === 'direct' ? dom.directList : dom.forumList).append(fragment);
   });
-  if (!filtered.length) dom.list.innerHTML = '<p class="empty-list">No conversations here yet.</p>';
+  const showForums = state.filter !== 'direct';
+  const showDirect = state.filter !== 'channel';
+  dom.forumSection.hidden = !showForums;
+  dom.directSection.hidden = !showDirect;
+  if (showForums && !dom.forumList.children.length) dom.forumList.innerHTML = '<p class="empty-list">No forums or groups yet.</p>';
+  if (showDirect && !dom.directList.children.length) dom.directList.innerHTML = '<p class="empty-list">No direct messages yet.</p>';
 }
 
 function renderHeader() {
@@ -657,13 +761,70 @@ function renderHeader() {
   dom.title.textContent = conversation ? conversation.title : 'No conversation selected';
   dom.kind.textContent = conversation ? labelFor(conversation.kind) : '';
   dom.description.textContent = conversation?.description || '';
-  dom.channelSymbol.textContent = conversation ? iconFor(conversation.kind) : '•';
-  dom.manageConversation.hidden = state.currentUser?.access_role !== 'admin' || !conversation;
+  const peer = conversation?.kind === 'direct' ? directPeerFor(conversation) : null;
+  dom.channelSymbol.textContent = conversation?.kind === 'direct' ? initialsFor(peer?.display_name || conversation.title) : conversation ? symbolFor(conversation) : '•';
+  dom.channelSymbol.classList.toggle('is-default-forum', conversation?.kind === 'channel' && !conversation.icon);
+  dom.channelSymbol.classList.toggle('direct-avatar', conversation?.kind === 'direct');
+  dom.conversationPresence.hidden = !peer;
+  if (peer) applyPresence(dom.conversationPresence, peer);
+  const shared = isSharedConversation(conversation);
+  dom.conversationMembers.hidden = !shared;
+  if (shared) {
+    dom.conversationMemberCount.textContent = conversation.member_count;
+    dom.conversationMembers.setAttribute('aria-label', `Show ${conversation.member_count} member${conversation.member_count === 1 ? '' : 's'}`);
+  }
+  dom.manageConversation.hidden = !canManageConversation(conversation);
+  if (!shared) closeMembersPopover();
+}
+
+function closeMembersPopover() {
+  if (!dom.membersPopover || dom.membersPopover.hidden) return;
+  dom.membersPopover.hidden = true;
+  dom.conversationMembers.setAttribute('aria-expanded', 'false');
+}
+
+function renderMembersPopover(members) {
+  const conversation = currentConversation();
+  if (!conversation || !isSharedConversation(conversation)) return;
+  const canManage = canManageConversation(conversation);
+  dom.membersPopover.innerHTML = `<header><div><span class="eyebrow">${escapeHtml(labelFor(conversation.kind))}</span><strong>${conversation.member_count} member${conversation.member_count === 1 ? '' : 's'}</strong></div><span><button class="members-popover-close" type="button" aria-label="Close member list">×</button></span></header><ul>${members.map((member) => { const principal = member.principal || member; return `<li><span class="avatar-stack"><span class="member-avatar">${escapeHtml(initialsFor(principal.display_name))}</span><span class="presence-bar ${principal.kind === 'agent' ? 'agent' : 'human'} ${isOnline(principal) ? 'online' : 'offline'}"></span></span><span><strong>${escapeHtml(principal.display_name)}</strong><small>${escapeHtml(titleForRole(member))}</small></span></li>`; }).join('') || '<li class="members-empty">No members found.</li>'}</ul>${canManage ? '<footer><button id="manage-members-from-popover" class="settings-inline-button" type="button">Manage conversation</button></footer>' : ''}`;
+  dom.membersPopover.querySelector('.members-popover-close')?.addEventListener('click', closeMembersPopover);
+  dom.membersPopover.querySelector('#manage-members-from-popover')?.addEventListener('click', () => { closeMembersPopover(); openManageConversation(); });
+}
+
+async function toggleMembersPopover() {
+  const conversation = currentConversation();
+  if (!isSharedConversation(conversation)) return;
+  if (!dom.membersPopover.hidden) { closeMembersPopover(); return; }
+  dom.membersPopover.hidden = false;
+  dom.conversationMembers.setAttribute('aria-expanded', 'true');
+  dom.membersPopover.innerHTML = '<div class="members-loading">Loading members…</div>';
+  try {
+    const members = state.conversationMembers[conversation.id] || await request(`/api/conversations/${encodeURIComponent(conversation.id)}/members`);
+    state.conversationMembers[conversation.id] = members;
+    if (currentConversation()?.id === conversation.id) renderMembersPopover(members);
+  } catch (error) {
+    dom.membersPopover.innerHTML = `<div class="members-loading"><strong>Could not load members</strong><small>${escapeHtml(error.message)}</small></div>`;
+  }
+}
+
+async function cacheConversationMembers(conversation = currentConversation()) {
+  if (!isSharedConversation(conversation) || state.conversationMembers[conversation.id]) return;
+  try {
+    const members = await request(`/api/conversations/${encodeURIComponent(conversation.id)}/members`);
+    state.conversationMembers[conversation.id] = members;
+    if (currentConversation()?.id === conversation.id) {
+      renderHeader();
+      if (!dom.membersPopover.hidden) renderMembersPopover(members);
+    }
+  } catch (_) {
+    // The member count remains available even if the directory cannot be loaded.
+  }
 }
 
 function renderMessages() {
   dom.feed.innerHTML = '';
-  const visibleMessages = currentConversation()?.kind === 'channel'
+  const visibleMessages = isSharedConversation()
     ? state.messages.filter((message) => !message.parent_message_id)
     : state.messages;
   visibleMessages.forEach((message) => dom.feed.append(createMessageNode(message)));
@@ -672,33 +833,37 @@ function renderMessages() {
   dom.feed.scrollTop = dom.feed.scrollHeight;
 }
 
+function appendQuotedReply(article, message) {
+  if (!message.parent_message_id) return;
+  const source = state.messages.find((candidate) => candidate.id === message.parent_message_id);
+  if (!source) return;
+  const quote = document.createElement('button');
+  quote.type = 'button';
+  quote.className = 'quoted-message';
+  quote.innerHTML = `<span class="quoted-message-avatar">${escapeHtml(initialsFor(source.sender.display_name))}</span><span><small>Replying to ${escapeHtml(source.sender.display_name)}</small><strong>${escapeHtml(source.body)}</strong></span><span class="quoted-message-jump" aria-hidden="true">↗</span>`;
+  quote.addEventListener('click', () => document.querySelector(`[data-message-id="${CSS.escape(source.id)}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }));
+  article.querySelector('.message-bubble').prepend(quote);
+}
+
 function createMessageNode(message, options = {}) {
   const fragment = document.querySelector('#message-template').content.cloneNode(true);
   const article = fragment.querySelector('article');
+  article.dataset.messageId = message.id;
   article.classList.toggle('agent', message.sender.kind === 'agent');
   article.classList.toggle('own', message.sender.id === state.currentUser?.id);
   article.classList.toggle('thread-context', Boolean(options.thread));
-  article.querySelector('.avatar').textContent = message.sender.display_name.slice(0, 1).toUpperCase();
-  const presence = article.querySelector('.presence-pill');
-  const online = message.sender.presence === 'online' || message.sender.presence === 'working';
-  presence.classList.toggle('online', online);
-  presence.classList.toggle('agent', message.sender.kind === 'agent');
+  article.querySelector('.avatar').textContent = initialsFor(message.sender.display_name);
+  applyPresence(article.querySelector('.presence-bar'), message.sender);
   article.querySelector('.message-meta strong').textContent = message.sender.display_name;
+  article.querySelector('.principal-kind').hidden = true;
   article.querySelector('time').textContent = new Intl.DateTimeFormat([], { hour: '2-digit', minute: '2-digit' }).format(new Date(message.created_at));
   article.querySelector('.message-body').textContent = message.body;
   article.classList.toggle('deleted', Boolean(message.is_deleted));
   article.querySelector('.edited-label').hidden = !message.edited_at;
-  if (message.activity) {
-    const activity = article.querySelector('.activity');
-    activity.hidden = false;
-    activity.querySelector('.activity-title').textContent = `${message.activity.status} · ${message.activity.tool_name || 'agent activity'}`;
-    activity.querySelector('p').textContent = message.activity.summary;
-  }
-  if (message.reasoning) {
+  if (message.activity || message.reasoning) {
     const reasoning = article.querySelector('.reasoning-trace');
     reasoning.hidden = false;
-    reasoning.querySelector('pre').textContent = message.reasoning.content;
-    reasoning.querySelector('small').textContent = `Stored until ${new Intl.DateTimeFormat([], { month: 'short', day: 'numeric', year: 'numeric' }).format(new Date(message.reasoning.expires_at))}`;
+    reasoning.querySelector('.thinking-summary').textContent = message.activity?.summary || 'The agent shared a brief activity update.';
   }
   (message.attachments || []).forEach((attachment) => {
     let item;
@@ -726,6 +891,7 @@ function createMessageNode(message, options = {}) {
     }
   }
   article.querySelector('.pinned-label').hidden = !message.is_pinned;
+  appendQuotedReply(article, message);
   const reactions = article.querySelector('.reaction-row');
   (message.reactions || []).forEach((reaction) => { const chip = document.createElement('button'); chip.type = 'button'; chip.className = `reaction-chip${reaction.reacted_by_me ? ' active' : ''}`; chip.textContent = `${reaction.emoji} ${reaction.count}`; chip.addEventListener('click', () => reactToMessage(message, reaction.emoji)); reactions.append(chip); });
   const replyButton = article.querySelector('.reply-button');
@@ -736,9 +902,9 @@ function createMessageNode(message, options = {}) {
   }
   const replies = state.messages.filter((candidate) => candidate.parent_message_id === message.id);
   const threadButton = article.querySelector('.thread-button');
-  if (!options.thread && currentConversation()?.kind === 'channel' && replies.length) {
+  if (!options.thread && isSharedConversation() && !message.is_deleted) {
     threadButton.hidden = false;
-    threadButton.textContent = `${replies.length} ${replies.length === 1 ? 'reply' : 'replies'} →`;
+    threadButton.textContent = replies.length ? `${replies.length} ${replies.length === 1 ? 'reply' : 'replies'} →` : 'Start thread';
     threadButton.addEventListener('click', () => openThread(message));
   }
   const canManageMessage = !message.is_deleted && (message.sender.id === state.currentUser?.id || state.currentUser?.access_role === 'admin');
@@ -825,6 +991,7 @@ async function selectConversation(id) {
   closeThread();
   renderConversations();
   renderHeader();
+  void cacheConversationMembers(currentConversation());
   renderReply();
   closeMobileSidebar();
   renderTyping();
@@ -843,7 +1010,7 @@ async function selectConversation(id) {
 }
 
 function setReply(message) {
-  if (currentConversation()?.kind === 'channel') {
+  if (isSharedConversation()) {
     openThread(message);
     return;
   }
@@ -857,6 +1024,7 @@ function renderReply() {
 }
 
 function openThread(message) {
+  if (!isSharedConversation()) return;
   state.threadRoot = message;
   dom.threadPanel.hidden = false;
   dom.appShell.classList.add('thread-open');
@@ -875,12 +1043,15 @@ function closeThread() {
 
 function renderThread() {
   if (!state.threadRoot) return;
+  const conversation = currentConversation();
+  if (!isSharedConversation(conversation)) { closeThread(); return; }
   const replies = state.messages.filter((message) => message.parent_message_id === state.threadRoot.id);
   dom.threadRoot.innerHTML = '';
   dom.threadMessages.innerHTML = '';
   dom.threadRoot.append(createMessageNode(state.threadRoot, { thread: true }));
   replies.forEach((reply) => dom.threadMessages.append(createMessageNode(reply, { thread: true })));
   dom.threadCount.textContent = `${replies.length} ${replies.length === 1 ? 'reply' : 'replies'}`;
+  document.querySelector('.thread-header .eyebrow').textContent = conversation.kind === 'channel' ? 'Forum thread' : 'Group thread';
   if (!replies.length) dom.threadMessages.innerHTML = '<div class="thread-empty"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 4h16v12H8l-4 4V4Z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg><p>No replies yet. Start the thread below.</p></div>';
   dom.threadMessages.scrollTop = dom.threadMessages.scrollHeight;
 }
@@ -1048,7 +1219,12 @@ function renderNotifications() {
 async function refreshConversations() {
   try { state.conversations = await request('/api/conversations'); renderConversations(); } catch (_) {}
 }
-function setStatus(text, online) { dom.status.textContent = text; dom.dot.classList.toggle('online', online); dom.headerDot.classList.toggle('online', online); }
+function setStatus(text, online) {
+  dom.status.textContent = online ? (isOnline(state.currentUser) ? 'Online' : text) : text;
+  if (online) applyPresence(dom.profilePresence, state.currentUser);
+  else if (dom.profilePresence) dom.profilePresence.classList.replace('online', 'offline');
+  dom.headerDot.classList.toggle('online', online);
+}
 function connectSocket() {
   const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
   const socket = new WebSocket(`${protocol}://${location.host}/ws`);
@@ -1081,6 +1257,9 @@ function connectSocket() {
     } else if (update.type === 'presence_updated') {
       const user = state.users.find((item) => item.id === update.data.id);
       if (user) user.presence = update.data.presence;
+      if (state.currentUser?.id === update.data.id) { state.currentUser.presence = update.data.presence; renderProfile(); }
+      renderConversations();
+      if (!dom.membersPopover.hidden && state.conversationMembers[state.selected]) renderMembersPopover(state.conversationMembers[state.selected]);
     }
   };
 }
@@ -1120,8 +1299,36 @@ dom.search.addEventListener('input', performSearch);
 function closeSearch() { dom.searchResults.hidden = true; dom.searchResultList.innerHTML = ''; }
 function openMobileSidebar() { dom.sidebar.classList.add('open'); dom.mobileBackdrop.hidden = false; document.body.classList.add('drawer-open'); }
 function closeMobileSidebar() { dom.sidebar.classList.remove('open'); dom.mobileBackdrop.hidden = true; document.body.classList.remove('drawer-open'); }
-function resizeTextArea(input) { input.style.height = 'auto'; input.style.height = `${Math.min(input.scrollHeight, 132)}px`; }
+function resizeTextArea(input) { input.style.height = 'auto'; input.style.height = `${Math.min(input.scrollHeight, input === dom.input && state.richMode ? 236 : 132)}px`; }
 function resizeComposer() { resizeTextArea(dom.input); }
+
+function setRichMode(enabled) {
+  state.richMode = enabled;
+  dom.composer.classList.toggle('rich-mode', enabled);
+  dom.composerMode.setAttribute('aria-pressed', String(enabled));
+  dom.composerMode.setAttribute('aria-label', enabled ? 'Use compact composer' : 'Enable rich composer');
+  dom.composerMode.title = enabled ? 'Use compact composer' : 'Expand composer';
+  dom.richComposerTools.hidden = !enabled;
+  dom.composerHint.textContent = enabled ? 'Rich message mode · Enter adds a new line · Ctrl + Enter sends' : 'Enter to send · Shift + Enter for a new line';
+  resizeComposer();
+  dom.input.focus();
+}
+
+function insertListMarker(marker) {
+  const start = dom.input.selectionStart;
+  const end = dom.input.selectionEnd;
+  const value = dom.input.value;
+  const lineStart = value.lastIndexOf('\n', Math.max(0, start - 1)) + 1;
+  const selected = value.slice(start, end);
+  if (selected.includes('\n')) {
+    const lines = selected.split('\n').map((line, index) => `${marker === '1. ' ? `${index + 1}. ` : marker}${line}`);
+    dom.input.setRangeText(lines.join('\n'), start, end, 'end');
+  } else {
+    const prefix = start === lineStart ? marker : `\n${marker}`;
+    dom.input.setRangeText(prefix, start, end, 'end');
+  }
+  dom.input.dispatchEvent(new Event('input', { bubbles: true }));
+}
 
 dom.filters.forEach((button) => button.addEventListener('click', () => {
   state.filter = button.dataset.filter;
@@ -1147,13 +1354,24 @@ dom.input.addEventListener('input', () => {
 });
 dom.threadInput.addEventListener('input', () => resizeTextArea(dom.threadInput));
 dom.input.addEventListener('keydown', (event) => {
-  if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); dom.composer.requestSubmit(); }
+  if (event.key !== 'Enter' || event.isComposing) return;
+  if (state.richMode) {
+    if (event.metaKey || event.ctrlKey) { event.preventDefault(); dom.composer.requestSubmit(); }
+    return;
+  }
+  if (!event.shiftKey) { event.preventDefault(); dom.composer.requestSubmit(); }
 });
 dom.threadInput.addEventListener('keydown', (event) => {
   if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); dom.threadComposer.requestSubmit(); }
 });
 dom.openSettings.addEventListener('click', openSettings);
 dom.closeSettings.addEventListener('click', closeSettings);
+dom.showPersonalSettings.addEventListener('click', showPersonalSettings);
+dom.openWorkspaceSettings.addEventListener('click', () => openWorkspaceAdministration());
+dom.themePreference.addEventListener('change', () => applyTheme(dom.themePreference.value));
+dom.composerMode.addEventListener('click', () => setRichMode(!state.richMode));
+dom.bulletList.addEventListener('click', () => insertListMarker('• '));
+dom.numberList.addEventListener('click', () => insertListMarker('1. '));
 dom.settingsUnlockForm.addEventListener('submit', unlockSettings);
 dom.settingsForm.addEventListener('submit', saveSettings);
 dom.settingsLock.addEventListener('click', lockSettings);
@@ -1166,8 +1384,10 @@ dom.mockAdminLogin.addEventListener('click', mockAdminLogin);
 dom.authLinks.querySelectorAll('[data-auth-mode]').forEach((button) => button.addEventListener('click', () => showAuth(button.dataset.authMode)));
 dom.logoutButton.addEventListener('click', logout);
 dom.changePasswordButton.addEventListener('click', changeOwnPassword);
-dom.newConversation.addEventListener('click', openNewConversation);
+dom.newForum.addEventListener('click', openNewForum);
+dom.newDirectMessage.addEventListener('click', openNewDirectMessage);
 dom.manageConversation.addEventListener('click', openManageConversation);
+dom.conversationMembers.addEventListener('click', toggleMembersPopover);
 dom.createHuman.addEventListener('click', () => openCreatePrincipal('human'));
 dom.createAgent.addEventListener('click', () => openCreatePrincipal('agent'));
 dom.createInvite.addEventListener('click', openCreateInvite);
@@ -1219,7 +1439,11 @@ document.addEventListener('keydown', (event) => {
     if (!dom.workspaceModal.hidden) closeWorkspaceModal();
     else if (!dom.settingsOverlay.hidden) closeSettings();
     else if (!dom.messageActionsPopover.hidden) closeMessageActionsPopover();
+    else if (!dom.membersPopover.hidden) closeMembersPopover();
     else { closeSearch(); closeMobileSidebar(); closeThread(); }
   }
+});
+document.addEventListener('click', (event) => {
+  if (!dom.membersPopover.hidden && !dom.membersPopover.contains(event.target) && !dom.conversationMembers.contains(event.target)) closeMembersPopover();
 });
 initializeAuth();

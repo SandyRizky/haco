@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en" data-theme="bright">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#8297ff" />
+    <meta name="description" content="Clickable bright and dark frosted-glass Haco UI concept." />
+    <title>Haco — Frosted Glass UI Mockup</title>
+    <link rel="stylesheet" href="/haco-glass-mockup.css" />
+    <script src="/haco-glass-mockup.js" defer></script>
+  </head>
+  <body>
+    <div class="ambient" aria-hidden="true">
+      <span class="orb orb-violet"></span>
+      <span class="orb orb-cyan"></span>
+      <span class="orb orb-coral"></span>
+      <span class="ring ring-top"></span>
+      <span class="ring ring-bottom"></span>
+    </div>
+    <div id="mobile-backdrop" class="mobile-backdrop"></div>
+
+    <main id="prototype" class="prototype" aria-label="Haco frosted glass interface mockup">
+      <aside id="sidebar" class="panel sidebar" aria-label="Conversations">
+        <header class="brand-row">
+          <div class="brand"><span class="brand-mark">h</span><span>haco</span></div>
+        </header>
+
+        <section class="sidebar-section" aria-labelledby="forums-label">
+          <div class="section-heading"><span id="forums-label">Forums</span><button id="new-forum" class="new-button" type="button" aria-label="Create forum">+</button></div>
+          <nav id="forums" class="conversation-list" aria-label="Forums">
+            <button class="conversation active" type="button" data-conversation="general"><span class="conversation-symbol">#</span><span class="conversation-copy"><strong>general</strong><small>Q2 collaboration</small></span><span class="unread">3</span></button>
+            <button class="conversation" type="button" data-conversation="product"><span class="conversation-symbol">#</span><span class="conversation-copy"><strong>product</strong><small>Roadmap planning</small></span></button>
+            <button class="conversation" type="button" data-conversation="design"><span class="conversation-symbol">#</span><span class="conversation-copy"><strong>design</strong><small>Critiques and research</small></span></button>
+            <button class="conversation" type="button" data-conversation="engineering"><span class="conversation-symbol">#</span><span class="conversation-copy"><strong>engineering</strong><small>Build updates</small></span></button>
+          </nav>
+        </section>
+
+        <section class="sidebar-section" aria-labelledby="direct-label">
+          <div class="section-heading"><span id="direct-label">Direct messages</span><button id="new-direct-message" class="new-button" type="button" aria-label="Start direct message">+</button></div>
+          <nav id="directs" class="conversation-list" aria-label="Direct messages">
+            <button class="conversation person-row" type="button" data-conversation="maya"><span class="avatar-stack"><span class="avatar avatar-maya">MP</span><span class="presence-pill human online" title="Online"></span></span><span class="conversation-copy"><strong>Maya Patel</strong><small>Roadmap planning</small></span></button>
+            <button class="conversation person-row" type="button" data-conversation="ethan"><span class="avatar-stack"><span class="avatar avatar-ethan">EC</span><span class="presence-pill human offline" title="Offline"></span></span><span class="conversation-copy"><strong>Ethan Chen</strong><small>Last active 12m ago</small></span></button>
+            <button class="conversation person-row" type="button" data-conversation="agent"><span class="avatar-stack"><span class="avatar avatar-agent">✦</span><span class="presence-pill agent online" title="Online"></span></span><span class="conversation-copy"><strong>Haco Agent</strong><small>Research workspace</small></span></button>
+          </nav>
+        </section>
+
+        <div class="sidebar-spacer"></div>
+        <footer class="my-card">
+          <span class="avatar-stack"><span class="avatar avatar-you">YO</span><span class="presence-pill human online" title="Online"></span></span>
+          <span class="my-copy"><strong>You</strong><small>Online</small></span>
+          <button id="account-settings" class="icon-button" type="button" aria-label="Open personal and admin settings">⚙</button>
+        </footer>
+      </aside>
+
+      <section class="panel conversation-panel" aria-label="Active conversation">
+        <header class="topbar">
+          <button id="mobile-menu" class="icon-button mobile-menu" type="button" aria-label="Open conversations">☰</button>
+          <div class="conversation-title"><span id="conversation-symbol" class="channel-icon">#</span><div><h1 id="conversation-name">general</h1><p id="conversation-description">Human and agent coordination</p></div></div>
+          <div class="topbar-actions"><button id="member-toggle" class="member-count" type="button" aria-label="Show members" aria-haspopup="dialog" aria-expanded="false">♧ <span id="member-count">12</span></button><button id="channel-settings" class="icon-button" type="button" aria-label="Edit forum settings" title="Edit forum settings">⚙</button><button id="theme-toggle" class="theme-button" type="button" aria-label="Switch to dark mode"><span class="theme-icon">☼</span><span id="theme-label">Bright</span></button><button id="thread-toggle" class="icon-button" type="button" aria-label="Toggle forum thread" title="Toggle forum thread">◫</button></div>
+        </header>
+        <section id="member-popover" class="member-popover" role="dialog" aria-label="Members" hidden></section>
+
+        <section id="messages" class="message-feed" aria-live="polite"></section>
+
+        <div class="composer-wrap">
+          <div id="reply-context" class="reply-context" hidden></div>
+          <form id="composer" class="composer" aria-label="Send a message">
+            <div class="composer-tools"><button id="composer-mode" class="small-tool" type="button" aria-label="Expand rich composer" title="Expand rich composer">✎</button><span class="rich-tools" hidden><button id="bullet-list" class="small-tool" type="button" aria-label="Insert bullet list">•</button><button id="number-list" class="small-tool" type="button" aria-label="Insert numbered list">1.</button></span><button class="small-tool" type="button" aria-label="Add attachment">+</button><button class="small-tool" type="button" aria-label="Add emoji">☺</button></div>
+            <textarea id="message-input" rows="1" placeholder="Message #general" aria-label="Message"></textarea>
+            <button class="send" type="submit">Send</button>
+          </form>
+          <p id="composer-hint" class="composer-hint" hidden>Rich message mode · Enter adds a new line</p>
+        </div>
+      </section>
+
+      <aside id="thread-panel" class="panel thread-panel" aria-label="Forum thread">
+        <header class="thread-header"><h2 id="thread-heading">Forum thread</h2><button id="thread-close" class="icon-button thread-close" type="button" aria-label="Close forum thread">×</button></header>
+        <section id="thread-feed" class="thread-feed"></section>
+        <div id="thread-reply-context" class="thread-reply-context" hidden></div>
+        <form id="thread-composer" class="thread-composer" aria-label="Reply in thread"><input id="thread-input" aria-label="Reply in thread" placeholder="Reply in thread…" /><button class="round-button" type="submit" aria-label="Send thread reply">↑</button></form>
+      </aside>
+    </main>
+
+    <dialog id="new-forum-dialog" class="modal-dialog">
+      <form id="new-forum-form" class="modal-form">
+        <header class="modal-header"><div><p class="eyebrow">Forum</p><h2>Create forum</h2></div><button class="icon-button" type="button" data-close-dialog aria-label="Close create forum">×</button></header>
+        <label>Forum name<input id="new-forum-name" name="name" required maxlength="40" placeholder="e.g. launch-planning" /></label>
+        <label>Description<textarea id="new-forum-description" name="description" rows="3" maxlength="120" placeholder="What is this forum for?"></textarea></label>
+        <fieldset><legend>Invite members</legend><label class="check-row"><input type="checkbox" name="member" value="maya" checked /> Maya Patel</label><label class="check-row"><input type="checkbox" name="member" value="ethan" /> Ethan Chen</label><label class="check-row"><input type="checkbox" name="member" value="agent" /> Haco Agent</label></fieldset>
+        <p class="form-note"><span class="mini-avatar">YO</span> You are added automatically as the forum administrator.</p>
+        <footer class="modal-actions"><button class="secondary-button" type="button" data-close-dialog>Cancel</button><button class="primary-button" type="submit">Create forum</button></footer>
+      </form>
+    </dialog>
+
+    <dialog id="direct-picker-dialog" class="modal-dialog">
+      <section class="modal-form">
+        <header class="modal-header"><div><p class="eyebrow">Direct messages</p><h2>Start a conversation</h2></div><button class="icon-button" type="button" data-close-dialog aria-label="Close direct message picker">×</button></header>
+        <p class="modal-copy">Choose a person or agent to message privately.</p>
+        <div class="picker-list"><button class="picker-row" type="button" data-start-dm="maya"><span class="avatar-stack"><span class="avatar avatar-maya">MP</span><span class="presence-pill human online"></span></span><span><strong>Maya Patel</strong><small>Roadmap planning</small></span><span>→</span></button><button class="picker-row" type="button" data-start-dm="ethan"><span class="avatar-stack"><span class="avatar avatar-ethan">EC</span><span class="presence-pill human offline"></span></span><span><strong>Ethan Chen</strong><small>Last active 12m ago</small></span><span>→</span></button><button class="picker-row" type="button" data-start-dm="agent"><span class="avatar-stack"><span class="avatar avatar-agent">✦</span><span class="presence-pill agent online"></span></span><span><strong>Haco Agent</strong><small>Research workspace</small></span><span>→</span></button></div>
+      </section>
+    </dialog>
+
+    <dialog id="forum-settings-dialog" class="modal-dialog">
+      <form id="forum-settings-form" class="modal-form settings-form">
+        <header class="modal-header"><div><p class="eyebrow">Forum settings</p><h2 id="forum-settings-title">Edit forum</h2></div><button class="icon-button" type="button" data-close-dialog aria-label="Close forum settings">×</button></header>
+        <div class="picture-field"><span id="forum-preview" class="forum-preview">#</span><label>Forum picture<input id="forum-picture" name="picture" maxlength="2" placeholder="#" /></label></div>
+        <label>Forum name<input id="forum-name-field" name="name" required maxlength="40" /></label>
+        <label>Description<textarea id="forum-description-field" name="description" rows="3" maxlength="120"></textarea></label>
+        <fieldset><legend>Members and roles</legend><div id="forum-member-roles" class="member-role-list"></div></fieldset>
+        <footer class="modal-actions"><button class="secondary-button" type="button" data-close-dialog>Cancel</button><button class="primary-button" type="submit">Save forum</button></footer>
+      </form>
+    </dialog>
+
+    <dialog id="account-settings-dialog" class="modal-dialog account-dialog">
+      <section class="modal-form">
+        <header class="modal-header"><div><p class="eyebrow">Settings</p><h2>My information</h2></div><button class="icon-button" type="button" data-close-dialog aria-label="Close settings">×</button></header>
+        <div class="settings-tabs" role="tablist" aria-label="Settings sections"><button class="settings-tab active" type="button" data-settings-tab="personal" role="tab" aria-selected="true">Personal info</button><button class="settings-tab" type="button" data-settings-tab="admin" role="tab" aria-selected="false">Administration</button></div>
+        <section class="settings-panel" data-settings-panel="personal" role="tabpanel"><div class="personal-card"><span class="avatar-stack"><span class="avatar avatar-you">YO</span><span class="presence-pill human online"></span></span><div><strong>You</strong><small>Online</small></div></div><label>Name<input value="You" maxlength="60" /></label><label>Profile picture<input type="file" accept="image/*" /></label><button class="primary-button full-button" type="button" data-mock-action="Personal information saved">Save personal information</button></section>
+        <section class="settings-panel" data-settings-panel="admin" role="tabpanel" hidden><p class="modal-copy">Manage workspace access, humans, and agents.</p><div class="admin-actions"><button type="button" data-mock-action="Create user flow opened"><strong>Create user</strong><small>Invite a human teammate</small><span>→</span></button><button type="button" data-mock-action="Connect agent flow opened"><strong>Connect agent</strong><small>Attach a Haco or external agent</small><span>→</span></button><button type="button" data-mock-action="Assign user flow opened"><strong>Assign user</strong><small>Place people in a forum or group</small><span>→</span></button></div></section>
+      </section>
+    </dialog>
+
+    <div id="mock-toast" class="mock-toast" role="status" aria-live="polite" hidden></div>
+  </body>
+</html>

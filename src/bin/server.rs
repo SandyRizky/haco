@@ -29,8 +29,8 @@ use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use futures_util::StreamExt;
 use haco::{
     AdminSettings, AdminSettingsUpdate, AgentActivity, Attachment, BootstrapResponse, ChatMessage,
-    Conversation, ConversationKind, CreateMessageRequest, OpenClawEvent, Principal, PrincipalKind,
-    ReactionSummary, RealtimeEvent, ReasoningTrace, UrlPreview,
+    Conversation, ConversationKind, ConversationMember, CreateMessageRequest, OpenClawEvent,
+    Principal, PrincipalKind, ReactionSummary, RealtimeEvent, ReasoningTrace, UrlPreview,
 };
 use hmac::{Hmac, Mac};
 use rand::{rngs::OsRng, RngCore};
@@ -431,6 +431,7 @@ struct ConversationRequest {
     kind: String,
     title: String,
     description: Option<String>,
+    icon: Option<String>,
     is_private: bool,
     member_ids: Vec<String>,
 }
@@ -439,6 +440,7 @@ struct ConversationRequest {
 struct ConversationUpdateRequest {
     title: String,
     description: Option<String>,
+    icon: Option<String>,
     is_private: bool,
     archived: bool,
 }
@@ -446,6 +448,8 @@ struct ConversationUpdateRequest {
 #[derive(Deserialize)]
 struct MembersUpdateRequest {
     member_ids: Vec<String>,
+    #[serde(default)]
+    roles: HashMap<String, String>,
 }
 
 #[derive(Deserialize)]
@@ -701,6 +705,10 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/api/conversations",
             get(conversations).post(create_conversation),
+        )
+        .route(
+            "/api/conversations/:conversation_id/members",
+            get(conversation_member_directory),
         )
         .route(
             "/api/conversations/:conversation_id/messages",
@@ -1626,17 +1634,28 @@ async fn conversations(
     Ok(Json(store.conversations_for(&principal.id)?))
 }
 
+async fn conversation_member_directory(
+    Path(conversation_id): Path<String>,
+    headers: HeaderMap,
+    State(state): State<AppState>,
+) -> Result<Json<Vec<ConversationMember>>, ApiError> {
+    let principal = require_user(&headers, &state)?;
+    let store = state
+        .store
+        .lock()
+        .map_err(|_| ApiError::internal("database lock poisoned"))?;
+    store.require_membership(&conversation_id, &principal.id)?;
+    Ok(Json(
+        store.conversation_members_with_roles(&conversation_id)?,
+    ))
+}
+
 async fn create_conversation(
     headers: HeaderMap,
     State(state): State<AppState>,
     Json(request): Json<ConversationRequest>,
 ) -> Result<(StatusCode, Json<Conversation>), ApiError> {
     let principal = require_user(&headers, &state)?;
-    if request.kind == "channel" && principal.access_role != "admin" {
-        return Err(ApiError::forbidden(
-            "only administrators can create channels",
-        ));
-    }
     let conversation = {
         let mut store = state
             .store
@@ -1661,14 +1680,15 @@ async fn update_conversation(
     State(state): State<AppState>,
     Json(request): Json<ConversationUpdateRequest>,
 ) -> Result<Json<Conversation>, ApiError> {
-    let admin = require_admin_user(&headers, &state)?;
+    let principal = require_user(&headers, &state)?;
     let mut store = state
         .store
         .lock()
         .map_err(|_| ApiError::internal("database lock poisoned"))?;
-    let conversation = store.update_conversation(&conversation_id, request, &admin.id)?;
+    store.require_conversation_manager(&conversation_id, &principal)?;
+    let conversation = store.update_conversation(&conversation_id, request, &principal.id)?;
     store.audit(
-        Some(&admin.id),
+        Some(&principal.id),
         "conversation.updated",
         "conversation",
         Some(&conversation_id),
@@ -1683,14 +1703,15 @@ async fn update_conversation_members(
     State(state): State<AppState>,
     Json(request): Json<MembersUpdateRequest>,
 ) -> Result<StatusCode, ApiError> {
-    let admin = require_admin_user(&headers, &state)?;
+    let principal = require_user(&headers, &state)?;
     let mut store = state
         .store
         .lock()
         .map_err(|_| ApiError::internal("database lock poisoned"))?;
-    store.update_members(&conversation_id, &request.member_ids)?;
+    store.require_conversation_manager(&conversation_id, &principal)?;
+    store.update_members(&conversation_id, &request.member_ids, &request.roles)?;
     store.audit(
-        Some(&admin.id),
+        Some(&principal.id),
         "conversation.members_updated",
         "conversation",
         Some(&conversation_id),
@@ -1704,14 +1725,15 @@ async fn delete_conversation(
     headers: HeaderMap,
     State(state): State<AppState>,
 ) -> Result<StatusCode, ApiError> {
-    let admin = require_admin_user(&headers, &state)?;
+    let principal = require_user(&headers, &state)?;
     let mut store = state
         .store
         .lock()
         .map_err(|_| ApiError::internal("database lock poisoned"))?;
+    store.require_conversation_manager(&conversation_id, &principal)?;
     store.delete_conversation(&conversation_id)?;
     store.audit(
-        Some(&admin.id),
+        Some(&principal.id),
         "conversation.deleted",
         "conversation",
         Some(&conversation_id),
@@ -2469,13 +2491,8 @@ async fn test_openclaw_connection(
             .map_err(|_| ApiError::internal("database lock poisoned"))?;
         store.begin_openclaw_test(&request.openclaw_agent_id, &test_id)?;
     }
-    let session_key = openclaw_session_key_for(
-        &conversation_id,
-        None,
-        Some(&test_id),
-        Some(&test_id),
-        0,
-    );
+    let session_key =
+        openclaw_session_key_for(&conversation_id, None, Some(&test_id), Some(&test_id), 0);
     let route_marker = session_key.trim_start_matches("hook:haco:");
     let test_message = serde_json::json!({
         "message": format!("Haco connection test. Reply with exactly: Haco connection successful.\n\n[[haco-route:{route_marker}]]\nInternal routing metadata. Do not mention or repeat it."),
@@ -3955,6 +3972,7 @@ impl Store {
                 kind TEXT NOT NULL,
                 title TEXT NOT NULL,
                 description TEXT,
+                icon TEXT,
                 is_private INTEGER NOT NULL DEFAULT 0
             );
             CREATE TABLE IF NOT EXISTS conversation_members (
@@ -4178,8 +4196,14 @@ impl Store {
         self.ensure_column("principals", "disabled", "INTEGER NOT NULL DEFAULT 0")?;
         self.ensure_column("principals", "created_at", "TEXT")?;
         self.ensure_column("conversations", "archived", "INTEGER NOT NULL DEFAULT 0")?;
+        self.ensure_column("conversations", "icon", "TEXT")?;
         self.ensure_column("conversations", "created_by", "TEXT")?;
         self.ensure_column("conversations", "created_at", "TEXT")?;
+        self.ensure_column(
+            "conversation_members",
+            "role",
+            "TEXT NOT NULL DEFAULT 'member'",
+        )?;
         self.ensure_column("conversation_members", "last_read_at", "TEXT")?;
         self.ensure_column("messages", "edited_at", "TEXT")?;
         self.ensure_column("messages", "deleted_at", "TEXT")?;
@@ -4195,6 +4219,17 @@ impl Store {
         )?;
         self.connection.execute(
             "UPDATE principals SET access_role = 'admin' WHERE id = 'human-alex' AND NOT EXISTS (SELECT 1 FROM principals WHERE access_role = 'admin')",
+            [],
+        )?;
+        self.connection.execute(
+            "UPDATE conversation_members
+             SET role = 'owner'
+             WHERE role = 'member'
+               AND EXISTS (
+                 SELECT 1 FROM conversations
+                 WHERE conversations.id = conversation_members.conversation_id
+                   AND conversations.created_by = conversation_members.principal_id
+               )",
             [],
         )?;
         let defaults = serde_json::to_string(&AdminSettings::default())?;
@@ -4335,6 +4370,22 @@ impl Store {
         rows.collect::<Result<Vec<_>, _>>().map_err(ApiError::from)
     }
 
+    fn conversation_members_with_roles(
+        &self,
+        conversation_id: &str,
+    ) -> Result<Vec<ConversationMember>, ApiError> {
+        let mut statement = self.connection.prepare("SELECT p.id, p.display_name, p.username, NULL, p.kind, p.access_role, p.presence, p.disabled, cm.role FROM conversation_members cm JOIN principals p ON p.id = cm.principal_id WHERE cm.conversation_id = ?1 ORDER BY CASE cm.role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 WHEN 'moderator' THEN 2 ELSE 3 END, p.kind, p.display_name").map_err(ApiError::from)?;
+        let rows = statement
+            .query_map([conversation_id], |row| {
+                Ok(ConversationMember {
+                    principal: principal_from_row(row)?,
+                    role: row.get(8)?,
+                })
+            })
+            .map_err(ApiError::from)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(ApiError::from)
+    }
+
     fn create_conversation(
         &mut self,
         creator_id: &str,
@@ -4392,8 +4443,8 @@ impl Store {
         let now = Utc::now().to_rfc3339();
         let tx = self.connection.transaction().map_err(ApiError::from)?;
         tx.execute(
-            "INSERT INTO conversations(id, kind, title, description, is_private, archived, created_by, created_at) VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6, ?7)",
-            params![id, request.kind, title, request.description.map(|value| value.trim().to_owned()), request.is_private as i64, creator_id, now],
+            "INSERT INTO conversations(id, kind, title, description, icon, is_private, archived, created_by, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7, ?8)",
+            params![id, request.kind, title, request.description.map(|value| value.trim().to_owned()), normalized_icon(request.icon), request.is_private as i64, creator_id, now],
         ).map_err(ApiError::from)?;
         for member_id in &members {
             let exists: i64 = tx
@@ -4435,8 +4486,8 @@ impl Store {
             ));
         }
         let changed = self.connection.execute(
-            "UPDATE conversations SET title = ?1, description = ?2, is_private = ?3, archived = ?4 WHERE id = ?5",
-            params![title, request.description.map(|value| value.trim().to_owned()), request.is_private as i64, request.archived as i64, id],
+            "UPDATE conversations SET title = ?1, description = ?2, icon = ?3, is_private = ?4, archived = ?5 WHERE id = ?6",
+            params![title, request.description.map(|value| value.trim().to_owned()), normalized_icon(request.icon), request.is_private as i64, request.archived as i64, id],
         ).map_err(ApiError::from)?;
         if changed == 0 {
             return Err(ApiError::not_found("conversation not found"));
@@ -4448,6 +4499,7 @@ impl Store {
         &mut self,
         conversation_id: &str,
         member_ids: &[String],
+        requested_roles: &HashMap<String, String>,
     ) -> Result<(), ApiError> {
         if member_ids.is_empty() {
             return Err(ApiError::bad_request(
@@ -4470,6 +4522,33 @@ impl Store {
                 "a direct message must contain exactly two members",
             ));
         }
+        let existing_roles = self
+            .conversation_members_with_roles(conversation_id)?
+            .into_iter()
+            .map(|member| (member.principal.id, member.role))
+            .collect::<HashMap<_, _>>();
+        let roles = members
+            .iter()
+            .map(|member| {
+                let role = requested_roles
+                    .get(member)
+                    .cloned()
+                    .or_else(|| existing_roles.get(member).cloned())
+                    .unwrap_or_else(|| "member".to_owned());
+                (member.clone(), role)
+            })
+            .collect::<HashMap<_, _>>();
+        if roles
+            .values()
+            .any(|role| !matches!(role.as_str(), "owner" | "admin" | "moderator" | "member"))
+        {
+            return Err(ApiError::bad_request("invalid conversation member role"));
+        }
+        if !roles.values().any(|role| role == "owner") {
+            return Err(ApiError::bad_request(
+                "a conversation needs at least one owner",
+            ));
+        }
         let tx = self.connection.transaction().map_err(ApiError::from)?;
         for member in &members {
             let exists: i64 = tx
@@ -4488,8 +4567,8 @@ impl Store {
             [conversation_id],
         )
         .map_err(ApiError::from)?;
-        for (index, member) in members.iter().enumerate() {
-            tx.execute("INSERT INTO conversation_members(conversation_id, principal_id, role, last_read_at) VALUES (?1, ?2, ?3, ?4)", params![conversation_id, member, if index == 0 { "owner" } else { "member" }, Utc::now().to_rfc3339()]).map_err(ApiError::from)?;
+        for member in &members {
+            tx.execute("INSERT INTO conversation_members(conversation_id, principal_id, role, last_read_at) VALUES (?1, ?2, ?3, ?4)", params![conversation_id, member, roles.get(member).expect("member role is present"), Utc::now().to_rfc3339()]).map_err(ApiError::from)?;
         }
         tx.commit().map_err(ApiError::from)?;
         Ok(())
@@ -5675,7 +5754,7 @@ impl Store {
                     (SELECT COUNT(*) FROM conversation_members members WHERE members.conversation_id = c.id),
                     (SELECT COUNT(*) FROM messages unread WHERE unread.conversation_id = c.id AND unread.sender_id != ?1 AND unread.deleted_at IS NULL AND unread.created_at > COALESCE(cm.last_read_at, '')),
                     (SELECT CASE WHEN m.deleted_at IS NULL THEN m.body ELSE 'Message deleted' END FROM messages m WHERE m.conversation_id = c.id ORDER BY created_at DESC LIMIT 1),
-                    (SELECT created_at FROM messages m WHERE m.conversation_id = c.id ORDER BY created_at DESC LIMIT 1)
+                    (SELECT created_at FROM messages m WHERE m.conversation_id = c.id ORDER BY created_at DESC LIMIT 1), c.icon
              FROM conversations c JOIN conversation_members cm ON cm.conversation_id = c.id
              WHERE cm.principal_id = ?1 AND c.archived = 0
              ORDER BY COALESCE((SELECT created_at FROM messages m WHERE m.conversation_id = c.id ORDER BY created_at DESC LIMIT 1), '') DESC, c.title",
@@ -5698,7 +5777,7 @@ impl Store {
                     (SELECT COUNT(*) FROM conversation_members members WHERE members.conversation_id = c.id),
                     (SELECT COUNT(*) FROM messages unread WHERE unread.conversation_id = c.id AND unread.sender_id != ?2 AND unread.deleted_at IS NULL AND unread.created_at > COALESCE((SELECT last_read_at FROM conversation_members WHERE conversation_id = c.id AND principal_id = ?2), '')),
                     (SELECT CASE WHEN m.deleted_at IS NULL THEN m.body ELSE 'Message deleted' END FROM messages m WHERE m.conversation_id = c.id ORDER BY created_at DESC LIMIT 1),
-                    (SELECT created_at FROM messages m WHERE m.conversation_id = c.id ORDER BY created_at DESC LIMIT 1)
+                    (SELECT created_at FROM messages m WHERE m.conversation_id = c.id ORDER BY created_at DESC LIMIT 1), c.icon
              FROM conversations c WHERE c.id = ?1",
             params![id, viewer_id], conversation_from_row,
         ).map_err(|error| match error { rusqlite::Error::QueryReturnedNoRows => ApiError::not_found("conversation not found"), other => ApiError::from(other) })?;
@@ -5753,6 +5832,32 @@ impl Store {
         } else {
             Err(ApiError::forbidden(
                 "you do not have access to this conversation",
+            ))
+        }
+    }
+
+    fn require_conversation_manager(
+        &self,
+        conversation_id: &str,
+        principal: &Principal,
+    ) -> Result<(), ApiError> {
+        if principal.access_role == "admin" {
+            return Ok(());
+        }
+        let role = self
+            .connection
+            .query_row(
+                "SELECT role FROM conversation_members WHERE conversation_id = ?1 AND principal_id = ?2",
+                params![conversation_id, principal.id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(ApiError::from)?;
+        if matches!(role.as_deref(), Some("owner") | Some("admin")) {
+            Ok(())
+        } else {
+            Err(ApiError::forbidden(
+                "only a forum or group owner can manage this conversation",
             ))
         }
     }
@@ -6784,6 +6889,7 @@ fn conversation_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Conversati
         kind: parse_conversation_kind(&kind).map_err(to_sql_error)?,
         title: row.get(2)?,
         description: row.get(3)?,
+        icon: row.get(10)?,
         is_private: row.get::<_, i64>(4)? != 0,
         archived: row.get::<_, i64>(5)? != 0,
         member_count: row.get::<_, i64>(6)? as u32,
@@ -6793,6 +6899,17 @@ fn conversation_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Conversati
             .map(|value| parse_time(&value))
             .transpose()
             .map_err(to_sql_error)?,
+    })
+}
+
+fn normalized_icon(icon: Option<String>) -> Option<String> {
+    icon.and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.chars().take(4).collect())
+        }
     })
 }
 
@@ -7609,6 +7726,7 @@ mod tests {
                     kind: "group".into(),
                     title: "Lifecycle".into(),
                     description: Some("Phase two test".into()),
+                    icon: None,
                     is_private: true,
                     member_ids: vec![agent.id.clone()],
                 },
@@ -8075,9 +8193,7 @@ mod tests {
         ));
         assert!(OPENCLAW_CONNECTOR_MODULE.contains("before_agent_start"));
         assert!(OPENCLAW_CONNECTOR_MODULE.contains("api.on(\"agent_end\""));
-        assert!(OPENCLAW_CONNECTOR_MODULE.contains(
-            "const routes = new Map();"
-        ));
+        assert!(OPENCLAW_CONNECTOR_MODULE.contains("const routes = new Map();"));
         assert!(OPENCLAW_CONNECTOR_MODULE.contains("const routeFromMessages = (messages) =>"));
         assert!(OPENCLAW_CONNECTOR_MODULE.contains("haco-route:([0-9a-f]+)"));
         assert!(OPENCLAW_CONNECTOR_MODULE.contains("Buffer.from(encoded, \"hex\")"));
