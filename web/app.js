@@ -43,7 +43,9 @@ const iconFor = (kind) => ({ channel: '#', group: '◉', direct: '@' }[kind] || 
 const labelFor = (kind) => ({ channel: 'Forum', group: 'Group chat', direct: 'Direct message' }[kind] || 'Conversation');
 const escapeHtml = (value) => value.replace(/[&<>"']/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character]));
 const renderMessageBody = (text) => {
+  if (!text) return '';
   const html = text.split(/(```[\s\S]*?```|`[^`]+`)/g).map((part) => {
+    if (!part) return '';
     if (part.startsWith('```') && part.endsWith('```')) {
       const lang = part.slice(3, part.indexOf('\n')).trim();
       const code = part.slice(3 + (lang ? lang.length + 1 : 0), -3);
@@ -841,27 +843,29 @@ function renderMessages() {
   if (!state.selected) {
     dom.feed.innerHTML = '<div class="empty-feed"><svg width="36" height="36" viewBox="0 0 36 36" fill="none" aria-hidden="true"><circle cx="18" cy="13" r="5" stroke="currentColor" stroke-width="1.5"/><path d="M4 32c0-5.5 4-10 14-10s14 4.5 14 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M18 1v4M18 22v4M6 6l3 3M27 9l-3 3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" opacity="0.4"/></svg><strong>No conversation selected</strong><p>Choose a conversation from the sidebar or create a new one.</p></div>';
     dom.loadOlder.hidden = true;
-    dom.composer.hidden = true;
+    if (dom.composer) dom.composer.hidden = true;
     return;
   }
-  dom.composer.hidden = false;
+  if (dom.composer) dom.composer.hidden = false;
   const scrollWasAtBottom = dom.feed.scrollTop >= dom.feed.scrollHeight - dom.feed.clientHeight - 20;
   dom.feed.innerHTML = '';
   const visibleMessages = isSharedConversation()
     ? state.messages.filter((message) => !message.parent_message_id)
     : state.messages;
-  visibleMessages.forEach((message) => dom.feed.append(createMessageNode(message)));
+  visibleMessages.forEach((message) => { try { dom.feed.append(createMessageNode(message)); } catch (_) {} });
   if (!visibleMessages.length) dom.feed.innerHTML = '<div class="empty-feed"><svg width="36" height="36" viewBox="0 0 36 36" fill="none" aria-hidden="true"><circle cx="18" cy="13" r="5" stroke="currentColor" stroke-width="1.5"/><path d="M4 32c0-5.5 4-10 14-10s14 4.5 14 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M18 1v4M18 22v4M6 6l3 3M27 9l-3 3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" opacity="0.4"/></svg><strong>No messages yet</strong><p>Start the conversation with a person or agent.</p></div>';
   dom.loadOlder.hidden = !state.hasOlder;
   const latestMessage = visibleMessages[visibleMessages.length - 1];
   const dateLabel = document.querySelector('.date-divider span');
-  if (latestMessage) {
-    const msgDate = new Date(latestMessage.created_at);
-    const today = new Date();
-    const isToday = msgDate.toDateString() === today.toDateString();
-    dateLabel.textContent = isToday ? 'Today' : new Intl.DateTimeFormat([], { weekday: 'long', month: 'short', day: 'numeric' }).format(msgDate);
-  } else {
-    dateLabel.textContent = '';
+  if (dateLabel) {
+    if (latestMessage) {
+      const msgDate = new Date(latestMessage.created_at);
+      const today = new Date();
+      const isToday = msgDate.toDateString() === today.toDateString();
+      dateLabel.textContent = isToday ? 'Today' : new Intl.DateTimeFormat([], { weekday: 'long', month: 'short', day: 'numeric' }).format(msgDate);
+    } else {
+      dateLabel.textContent = '';
+    }
   }
   if (!state.loadingOlder && scrollWasAtBottom) dom.feed.scrollTop = dom.feed.scrollHeight;
   state.loadingOlder = false;
@@ -896,22 +900,27 @@ function createMessageNode(message, options = {}) {
   article.querySelector('.edited-label').hidden = !message.edited_at;
   if (message.activity || message.reasoning) {
     const reasoning = article.querySelector('.reasoning-trace');
+    if (!reasoning) return;
     reasoning.hidden = false;
-    reasoning.querySelector('.thinking-summary').textContent = message.activity?.summary || 'The agent shared a brief activity update.';
+    const summary = reasoning.querySelector('.thinking-summary');
+    if (summary) summary.textContent = message.activity?.summary || 'The agent shared a brief activity update.';
     if (message.reasoning?.content) {
       const content = reasoning.querySelector('.thinking-content');
+      if (!content) return;
       content.textContent = message.reasoning.content;
       content.hidden = false;
     }
   }
   if (message.activity) {
     const activity = article.querySelector('.activity');
-    if (activity) {
-      activity.hidden = false;
-      activity.querySelector('.activity-title').textContent = message.activity.tool_name || 'Agent activity';
-      activity.querySelector('p').textContent = message.activity.summary || '';
-      activity.querySelector('.activity-pulse').className = `activity-pulse ${message.activity.status || 'completed'}`;
-    }
+    if (!activity) return;
+    activity.hidden = false;
+    const title = activity.querySelector('.activity-title');
+    if (title) title.textContent = message.activity.tool_name || 'Agent activity';
+    const desc = activity.querySelector('p');
+    if (desc) desc.textContent = message.activity.summary || '';
+    const pulse = activity.querySelector('.activity-pulse');
+    if (pulse) pulse.className = `activity-pulse ${message.activity.status || 'completed'}`;
   }
   (message.attachments || []).forEach((attachment) => {
     let item;
@@ -1286,10 +1295,10 @@ async function catchUpMessages() {
   } catch (_) {}
 }
 function setStatus(text, online) {
-  dom.status.textContent = text;
+  if (dom.status) dom.status.textContent = text;
   if (online) applyPresence(dom.profilePresence, state.currentUser);
   else if (dom.profilePresence) dom.profilePresence.classList.replace('online', 'offline');
-  dom.headerDot.classList.toggle('online', online);
+  if (dom.headerDot) dom.headerDot.classList.toggle('online', online);
 }
 function connectSocket() {
   const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
