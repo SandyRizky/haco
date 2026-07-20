@@ -35,6 +35,16 @@ const mediaTypeFromUrl = (url) => {
   return "application/octet-stream";
 };
 
+const postThinking = async (hacoUrl, token, payload) => {
+  try {
+    await fetch(String(hacoUrl).replace(/\/$/, "") + "/api/integrations/openclaw/thinking", {
+      method: "POST",
+      headers: { "authorization": "Bearer " + token, "content-type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+  } catch {}
+};
+
 const attachmentsFromMessage = async (message, hacoUrl, token, principalId) => {
   const candidates = [];
   if (typeof message?.mediaUrl === "string") candidates.push(message.mediaUrl);
@@ -190,6 +200,14 @@ export default {
         forgetRoute(event, context);
         api.logger?.warn?.("Haco reply skipped: the completed agent run has no assistant text.");
         return;
+      }
+      if (reasoning) {
+        postThinking(config.hacoUrl, config.token, {
+          conversation_id: route.conversation_id,
+          agent_id: principalId,
+          content: reasoning,
+          done: true
+        });
       }
       const endpoint = String(config.hacoUrl).replace(/\/$/, "") + "/api/integrations/openclaw/events";
       try {

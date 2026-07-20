@@ -163,6 +163,12 @@ pub enum RealtimeEvent {
         message_id: String,
         conversation_id: String,
     },
+    ReasoningUpdate {
+        conversation_id: String,
+        principal: Principal,
+        content: String,
+        done: bool,
+    },
     Typing {
         conversation_id: String,
         principal: Principal,

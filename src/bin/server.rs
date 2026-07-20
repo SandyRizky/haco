@@ -609,6 +609,15 @@ struct OpenClawWizardTestRequest {
     openclaw_agent_id: String,
 }
 
+#[derive(Deserialize)]
+struct OpenClawThinkingRequest {
+    conversation_id: String,
+    agent_id: String,
+    content: String,
+    #[serde(default)]
+    done: bool,
+}
+
 #[derive(Clone)]
 struct OpenClawDispatchTarget {
     openclaw_agent_id: String,
@@ -809,6 +818,7 @@ async fn main() -> anyhow::Result<()> {
             post(delete_conversation),
         )
         .route("/api/integrations/openclaw/events", post(openclaw_event))
+        .route("/api/integrations/openclaw/thinking", post(openclaw_thinking))
         .route(
             "/api/integrations/openclaw/uploads",
             post(upload_openclaw_attachment).layer(DefaultBodyLimit::max(1_073_741_824)),
@@ -3256,6 +3266,16 @@ const mediaTypeFromUrl = (url) => {
   return "application/octet-stream";
 };
 
+const postThinking = async (hacoUrl, token, payload) => {
+  try {
+    await fetch(String(hacoUrl).replace(/\/$/, "") + "/api/integrations/openclaw/thinking", {
+      method: "POST",
+      headers: { "authorization": "Bearer " + token, "content-type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+  } catch {}
+};
+
 const attachmentsFromMessage = async (message, hacoUrl, token, principalId) => {
   const candidates = [];
   if (typeof message?.mediaUrl === "string") candidates.push(message.mediaUrl);
@@ -3411,6 +3431,14 @@ export default {
         forgetRoute(event, context);
         api.logger?.warn?.("Haco reply skipped: the completed agent run has no assistant text.");
         return;
+      }
+      if (reasoning) {
+        postThinking(config.hacoUrl, config.token, {
+          conversation_id: route.conversation_id,
+          agent_id: principalId,
+          content: reasoning,
+          done: true
+        });
       }
       const endpoint = String(config.hacoUrl).replace(/\/$/, "") + "/api/integrations/openclaw/events";
       try {
@@ -3744,6 +3772,36 @@ async fn openclaw_event(
     Ok((StatusCode::CREATED, Json(message)))
 }
 
+async fn openclaw_thinking(
+    headers: HeaderMap,
+    State(state): State<AppState>,
+    Json(request): Json<OpenClawThinkingRequest>,
+) -> Result<StatusCode, ApiError> {
+    let supplied_token = bearer_token(&headers)
+        .ok_or_else(|| ApiError::unauthorized("integration token is required"))?;
+    let principal = {
+        let store = state
+            .store
+            .lock()
+            .map_err(|_| ApiError::internal("database lock poisoned"))?;
+        let stored_token = store
+            .openclaw_token()?
+            .ok_or_else(|| ApiError::service_unavailable("OpenClaw token is not configured"))?;
+        let supplied_hash = format!("sha256:{}", hash_token(supplied_token));
+        if supplied_hash != stored_token {
+            return Err(ApiError::unauthorized("invalid OpenClaw token"));
+        }
+        store.principal(&request.agent_id)?
+    };
+    let _ = state.events.send(RealtimeEvent::ReasoningUpdate {
+        conversation_id: request.conversation_id,
+        principal,
+        content: request.content,
+        done: request.done,
+    });
+    Ok(StatusCode::NO_CONTENT)
+}
+
 async fn admin_settings(
     headers: HeaderMap,
     State(state): State<AppState>,
@@ -3987,7 +4045,9 @@ async fn handle_socket(
                             .and_then(|store| store.is_member(&message.conversation_id, &principal.id).ok())
                             .unwrap_or(false),
                         RealtimeEvent::MessageUpdated(message) => store.lock().ok().and_then(|store| store.is_member(&message.conversation_id, &principal.id).ok()).unwrap_or(false),
-                        RealtimeEvent::MessageDeleted { conversation_id, .. } | RealtimeEvent::Typing { conversation_id, .. } => store.lock().ok().and_then(|store| store.is_member(conversation_id, &principal.id).ok()).unwrap_or(false),
+                        RealtimeEvent::MessageDeleted { conversation_id, .. }
+                        | RealtimeEvent::Typing { conversation_id, .. }
+                        | RealtimeEvent::ReasoningUpdate { conversation_id, .. } => store.lock().ok().and_then(|store| store.is_member(conversation_id, &principal.id).ok()).unwrap_or(false),
                         RealtimeEvent::PresenceUpdated(_) => true,
                     };
                     if !allowed { continue; }
