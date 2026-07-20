@@ -1086,7 +1086,7 @@ select:focus-visible, summary:focus-visible, [tabindex]:focus-visible {
 /* Mention suggestions */
 .mention-suggestions {
   position: absolute; z-index: 12;
-  right: clamp(18px, 4vw, 56px);
+  left: clamp(16px, 3vw, 35px);
   bottom: calc(100% - 2px);
   display: grid; width: min(280px, calc(100% - 36px));
   padding: 5px; border-radius: 12px;
@@ -2435,7 +2435,7 @@ body {
 .message.agent:not(.own) .message-bubble { border-color: rgba(57, 207, 229, 0.34); background: linear-gradient(135deg, rgba(88, 192, 232, 0.17), rgba(136, 95, 224, 0.17)); }
 .message-meta { padding: 0 2px 3px; }.message-meta strong { color: var(--text); }
 .principal-kind { display: none !important; }
-.reply-button { color: var(--indigo); }.message:hover .reply-button, .reply-button:focus-visible { opacity: 1; }
+.reply-button { color: var(--indigo); }.message:hover .reply-button, .reply-button:focus-visible { opacity: 1; }.own .reply-button { opacity: 1; }
 .message-body { color: var(--text); font-size: 13px; line-height: 1.58; overflow-wrap: anywhere; white-space: pre-wrap; }
 .message-body .message-link { color: var(--cyan); text-decoration: underline; word-break: break-all; }
 .message-body .message-link:hover { color: var(--indigo); }

@@ -1,4 +1,4 @@
-const state = { conversations: [], selected: null, messages: [], currentUser: null, replyTo: null, threadRoot: null, socket: null, filter: 'all', adminToken: null, adminSettings: null, settingsTab: 'workspace', settingsView: 'personal', authStatus: null, users: [], conversationMembers: {}, modalSubmit: null, typingTimer: null, draftTimer: null, remoteTyping: new Map(), pendingAttachments: [], hasOlder: false, notifications: [], pushRegistration: null, pushConfiguration: null, openclawDiscovery: null, popoverMessage: null, richMode: false, loadingOlder: false, reconnectAttempts: 0 };
+const state = { conversations: [], selected: null, messages: [], currentUser: null, replyTo: null, threadRoot: null, socket: null, filter: 'all', adminToken: null, adminSettings: null, settingsTab: 'workspace', settingsView: 'personal', authStatus: null, users: [], conversationMembers: {}, modalSubmit: null, typingTimer: null, draftTimer: null, remoteTyping: new Map(), pendingAttachments: [], hasOlder: false, notifications: [], pushRegistration: null, pushConfiguration: null, openclawDiscovery: null, popoverMessage: null, richMode: false, loadingOlder: false, reconnectAttempts: 0, agentThinking: null };
 const dom = {
   list: document.querySelector('#conversations'), forumList: document.querySelector('#forum-conversations'), directList: document.querySelector('#direct-conversations'), forumSection: document.querySelector('#forum-section'), directSection: document.querySelector('#direct-section'), feed: document.querySelector('#messages'), title: document.querySelector('#conversation-title'),
   kind: document.querySelector('#conversation-kind'), description: document.querySelector('#conversation-description'), status: document.querySelector('#connection-status'),
@@ -860,7 +860,14 @@ function renderMessages() {
       dom.feed.append(createMessageFallbackNode(message));
     }
   });
-  if (!visibleMessages.length) dom.feed.innerHTML = '<div class="empty-feed"><svg width="36" height="36" viewBox="0 0 36 36" fill="none" aria-hidden="true"><circle cx="18" cy="13" r="5" stroke="currentColor" stroke-width="1.5"/><path d="M4 32c0-5.5 4-10 14-10s14 4.5 14 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M18 1v4M18 22v4M6 6l3 3M27 9l-3 3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" opacity="0.4"/></svg><strong>No messages yet</strong><p>Start the conversation with a person or agent.</p></div>';
+  if (state.agentThinking && !isSharedConversation()) {
+    const elapsed = Math.round((Date.now() - state.agentThinking.at) / 1000);
+    const thinking = document.createElement('article');
+    thinking.className = 'message agent thinking-placeholder';
+    thinking.innerHTML = `<span class="avatar-stack message-avatar-stack"><span class="avatar">${escapeHtml(initialsFor(state.agentThinking.name))}</span><span class="presence-bar agent online"></span></span><div class="message-content"><div class="message-meta"><strong>${escapeHtml(state.agentThinking.name)}</strong></div><div class="message-bubble"><p class="message-body"><span class="thinking-spinner"></span> Thinking${elapsed > 3 ? ` for ${elapsed}s` : ''}…</p></div></div>`;
+    dom.feed.append(thinking);
+  }
+  if (!visibleMessages.length && !state.agentThinking) dom.feed.innerHTML = '<div class="empty-feed"><svg width="36" height="36" viewBox="0 0 36 36" fill="none" aria-hidden="true"><circle cx="18" cy="13" r="5" stroke="currentColor" stroke-width="1.5"/><path d="M4 32c0-5.5 4-10 14-10s14 4.5 14 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M18 1v4M18 22v4M6 6l3 3M27 9l-3 3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" opacity="0.4"/></svg><strong>No messages yet</strong><p>Start the conversation with a person or agent.</p></div>';
   dom.loadOlder.hidden = !state.hasOlder;
   const latestMessage = visibleMessages[visibleMessages.length - 1];
   const dateLabel = document.querySelector('.date-divider span');
@@ -930,25 +937,28 @@ function createMessageNode(message, options = {}) {
     const reasoning = article.querySelector('.reasoning-trace');
     if (!reasoning) return;
     reasoning.hidden = false;
-    const summary = reasoning.querySelector('.thinking-summary');
-    if (summary) summary.textContent = message.activity?.summary || 'The agent shared a brief activity update.';
+    const label = reasoning.querySelector('.thinking-label');
+    if (label) {
+      const msgTime = new Date(message.created_at).getTime();
+      const now = Date.now();
+      const elapsed = Math.round((now - msgTime) / 1000);
+      if (elapsed < 60) {
+        label.textContent = 'Worked';
+      } else {
+        label.textContent = `Worked for ${Math.floor(elapsed / 60)}m`;
+      }
+    }
     if (message.reasoning?.content) {
       const content = reasoning.querySelector('.thinking-content');
       if (!content) return;
       content.textContent = message.reasoning.content;
       content.hidden = false;
+    } else if (message.activity?.summary) {
+      const content = reasoning.querySelector('.thinking-content');
+      if (!content) return;
+      content.textContent = message.activity.summary;
+      content.hidden = false;
     }
-  }
-  if (message.activity) {
-    const activity = article.querySelector('.activity');
-    if (!activity) return;
-    activity.hidden = false;
-    const title = activity.querySelector('.activity-title');
-    if (title) title.textContent = message.activity.tool_name || 'Agent activity';
-    const desc = activity.querySelector('p');
-    if (desc) desc.textContent = message.activity.summary || '';
-    const pulse = activity.querySelector('.activity-pulse');
-    if (pulse) pulse.className = `activity-pulse ${message.activity.status || 'completed'}`;
   }
   (message.attachments || []).forEach((attachment) => {
     let item;
@@ -1178,6 +1188,11 @@ async function sendMessage(event) {
     renderMessages();
     renderReply();
     refreshConversations();
+    const peer = !isSharedConversation() ? directPeerFor(currentConversation()) : null;
+    if (peer?.kind === 'agent') {
+      state.agentThinking = { name: peer.display_name, id: peer.id, at: Date.now() };
+      setTimeout(() => renderMessages(), 500);
+    }
   } catch (error) { setStatus(error.message, false); }
 }
 
@@ -1205,6 +1220,7 @@ function updateSendButton() {
   sendButton.disabled = !hasContent;
 }
 function renderMentionSuggestions() {
+  if (!isSharedConversation()) { dom.mentionSuggestions.hidden = true; return; }
   const match = dom.input.value.slice(0, dom.input.selectionStart).match(/@([A-Za-z0-9_-]*)$/);
   if (!match) { dom.mentionSuggestions.hidden = true; return; }
   const candidates = state.users.filter((user) => user.username.toLowerCase().startsWith(match[1].toLowerCase())).slice(0, 6);
@@ -1353,6 +1369,7 @@ function connectSocket() {
     if (update.type === 'message_created') {
       refreshConversations();
       refreshNotifications();
+      if (update.data.sender?.kind === 'agent') state.agentThinking = null;
       if (update.data.conversation_id === state.selected && !state.messages.some((message) => message.id === update.data.id)) {
         state.messages.push(update.data);
         renderMessages();
