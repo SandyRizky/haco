@@ -1395,6 +1395,9 @@ function connectSocket() {
       renderConversations();
       if (!dom.membersPopover.hidden && state.conversationMembers[state.selected]) renderMembersPopover(state.conversationMembers[state.selected]);
     } else if (update.type === 'reasoning_update') {
+      if (state.messages.some((m) => m.sender?.id === update.data.principal?.id && m.conversation_id === update.data.conversation_id)) {
+        state.streamingReasoning = null; state._thinkingStart = null; renderMessages(); return;
+      }
       if (update.data.conversation_id === state.selected) {
         if (!state.streamingReasoning || state.streamingReasoning.agentId !== update.data.principal?.id) {
           state.streamingReasoning = { agentId: update.data.principal?.id, name: update.data.principal?.display_name, content: '' };

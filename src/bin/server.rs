@@ -3433,7 +3433,7 @@ export default {
         return;
       }
       if (reasoning) {
-        postThinking(config.hacoUrl, config.token, {
+        await postThinking(config.hacoUrl, config.token, {
           conversation_id: route.conversation_id,
           agent_id: principalId,
           content: reasoning,

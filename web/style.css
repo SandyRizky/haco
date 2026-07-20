@@ -2028,7 +2028,7 @@ select:focus-visible, summary:focus-visible, [tabindex]:focus-visible {
 
   .reply-state { margin-bottom: 5px; }
 
-  .mention-suggestions { right: 9px; width: min(280px, calc(100% - 18px)); }
+  .mention-suggestions { left: 9px; right: auto; width: min(280px, calc(100% - 18px)); }
 
   /* Thread panel - fullscreen sheet */
   .thread-panel {
