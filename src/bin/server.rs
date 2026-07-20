@@ -1880,7 +1880,7 @@ async fn upload_openclaw_attachment(
         )
     };
     let supplied_hash = format!("sha256:{}", hash_token(supplied_token));
-    if supplied_hash != expected_token && supplied_token != expected_token {
+    if supplied_hash != expected_token {
         return Err(ApiError::unauthorized("invalid OpenClaw token"));
     }
     let mut agent_id = None;
@@ -2417,57 +2417,67 @@ async fn connect_openclaw(
         &principal_map,
     )
     .await;
-    let mut store = state
-        .store
-        .lock()
-        .map_err(|_| ApiError::internal("database lock poisoned"))?;
-    match install_result {
-        Ok(config_backup) => {
-            store.set_openclaw_connector_status(true, None)?;
-            store.audit(
-                Some(&admin.id),
-                "openclaw.connected",
-                "integration",
-                None,
-                Some(serde_json::json!({
-                    "agent_count": agent_ids.len(),
-                    "config_backup_path": config_backup.path,
-                    "config_backup_files": config_backup.files,
-                })),
-            )?;
-            Ok(Json(OpenClawConnectResponse {
-                connections: store.openclaw_connections()?,
-                config_backup,
-            }))
+    let (result, presence_ids) = {
+        let mut store = state
+            .store
+            .lock()
+            .map_err(|_| ApiError::internal("database lock poisoned"))?;
+        match install_result {
+            Ok(config_backup) => {
+                let presence_ids = store.set_openclaw_connector_status(true, None)?;
+                store.audit(
+                    Some(&admin.id),
+                    "openclaw.connected",
+                    "integration",
+                    None,
+                    Some(serde_json::json!({
+                        "agent_count": agent_ids.len(),
+                        "config_backup_path": config_backup.path,
+                        "config_backup_files": config_backup.files,
+                    })),
+                )?;
+                (Ok(Json(OpenClawConnectResponse {
+                    connections: store.openclaw_connections()?,
+                    config_backup,
+                })), presence_ids)
+            }
+            Err(error) => {
+                let presence_ids = store.set_openclaw_connector_status(false, Some(&error.message))?;
+                store.audit(
+                    Some(&admin.id),
+                    "openclaw.connection_failed",
+                    "integration",
+                    None,
+                    Some(serde_json::json!({
+                        "agent_count": agent_ids.len(),
+                        "config_backup_path": error.config_backup.as_ref().map(|backup| &backup.path),
+                        "error": error.message,
+                    })),
+                )?;
+                let backup_detail = error.config_backup.as_ref().map(|backup| {
+                    format!(
+                        " OpenClaw configuration backup: {} ({} file{}).",
+                        backup.path,
+                        backup.files,
+                        if backup.files == 1 { "" } else { "s" }
+                    )
+                });
+                (Err(ApiError::service_unavailable(format!(
+                    "Haco created the agent mappings, but OpenClaw connector installation failed: {}{}",
+                    error.message,
+                    backup_detail.unwrap_or_default(),
+                ))), presence_ids)
+            }
         }
-        Err(error) => {
-            store.set_openclaw_connector_status(false, Some(&error.message))?;
-            store.audit(
-                Some(&admin.id),
-                "openclaw.connection_failed",
-                "integration",
-                None,
-                Some(serde_json::json!({
-                    "agent_count": agent_ids.len(),
-                    "config_backup_path": error.config_backup.as_ref().map(|backup| &backup.path),
-                    "error": error.message,
-                })),
-            )?;
-            let backup_detail = error.config_backup.as_ref().map(|backup| {
-                format!(
-                    " OpenClaw configuration backup: {} ({} file{}).",
-                    backup.path,
-                    backup.files,
-                    if backup.files == 1 { "" } else { "s" }
-                )
-            });
-            Err(ApiError::service_unavailable(format!(
-                "Haco created the agent mappings, but OpenClaw connector installation failed: {}{}",
-                error.message,
-                backup_detail.unwrap_or_default(),
-            )))
+    };
+    for principal_id in &presence_ids {
+        if let Ok(store) = state.store.lock() {
+            if let Ok(principal) = store.principal(principal_id) {
+                let _ = state.events.send(RealtimeEvent::PresenceUpdated(principal));
+            }
         }
     }
+    result
 }
 
 async fn test_openclaw_connection(
@@ -3223,11 +3233,26 @@ const textFromMessage = (message) => {
     .trim();
 };
 
+const reasoningFromMessage = (message) => {
+  if (!message) return null;
+  if (typeof message.reasoning === "string" && message.reasoning.trim()) return message.reasoning.trim();
+  if (!Array.isArray(message.content)) return null;
+  const parts = message.content.filter((part) => part && part.type === "reasoning" && typeof part.reasoning === "string" && part.reasoning.trim());
+  if (parts.length) return parts.map((part) => part.reasoning).join("\n").trim();
+  return null;
+};
+
 const mediaTypeFromUrl = (url) => {
   const path = String(url).split(/[?#]/, 1)[0].toLowerCase();
   if (/\.(png|jpe?g|gif|webp|avif|svg)$/.test(path)) return "image/" + (path.endsWith(".svg") ? "svg+xml" : path.match(/\.([a-z0-9]+)$/)?.[1]?.replace("jpg", "jpeg"));
   if (/\.(mp4|webm|mov)$/.test(path)) return "video/" + (path.endsWith(".mov") ? "quicktime" : path.match(/\.([a-z0-9]+)$/)?.[1]);
-  if (/\.(mp3|wav|ogg|m4a)$/.test(path)) return "audio/" + (path.match(/\.([a-z0-9]+)$/)?.[1] || "mpeg");
+  if (/\.(mp3|wav|ogg|m4a|flac)$/.test(path)) return "audio/" + (path.match(/\.([a-z0-9]+)$/)?.[1] || "mpeg");
+  if (/\.pdf$/i.test(path)) return "application/pdf";
+  if (/\.(zip|tar|gz|tgz|rar|7z)$/i.test(path)) return "application/" + (path.match(/\.([a-z0-9]+)$/)?.[1] || "zip");
+  if (/\.(doc|docx)$/i.test(path)) return "application/msword";
+  if (/\.(xls|xlsx)$/i.test(path)) return "application/vnd.ms-excel";
+  if (/\.(csv)$/i.test(path)) return "text/csv";
+  if (/\.(json)$/i.test(path)) return "application/json";
   return "application/octet-stream";
 };
 
@@ -3265,6 +3290,7 @@ const attachmentsFromMessage = async (message, hacoUrl, token, principalId) => {
 
 const deliverWithRetry = async (endpoint, token, payload) => {
   const delays = [0, 500, 1500, 3500];
+  let lastStatus = 0;
   let lastError;
   for (const delay of delays) {
     if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
@@ -3276,11 +3302,19 @@ const deliverWithRetry = async (endpoint, token, payload) => {
       });
       if (response.ok) return;
       const detail = await response.text();
+      lastStatus = response.status;
       lastError = new Error("Haco delivery failed (" + response.status + "): " + detail);
       if (response.status < 500 && response.status !== 408 && response.status !== 429) throw lastError;
     } catch (error) {
+      if (error instanceof TypeError && error.message === "fetch failed") {
+        lastError = error;
+        continue;
+      }
       lastError = error;
-      if (error?.message?.includes("Haco delivery failed (4") && !error?.message?.includes("408") && !error?.message?.includes("429")) throw error;
+      if (lastStatus >= 400 && lastStatus < 500 && lastStatus !== 408 && lastStatus !== 429) throw error;
+      if (!lastStatus && error?.message?.startsWith("Haco delivery failed (")) {
+        if (!error.message.includes("(5") && !error.message.includes("(408") && !error.message.includes("(429")) throw error;
+      }
     }
   }
   throw lastError ?? new Error("Haco delivery failed");
@@ -3371,6 +3405,7 @@ export default {
       const messages = Array.isArray(event?.messages) ? event.messages : [];
       const final = [...messages].reverse().find((message) => message?.role === "assistant");
       const body = textFromMessage(final);
+      const reasoning = reasoningFromMessage(final);
       const attachments = await attachmentsFromMessage(final, config.hacoUrl, config.token, principalId);
       if (!body && !attachments.length) {
         forgetRoute(event, context);
@@ -3385,6 +3420,7 @@ export default {
             conversation_id: route.conversation_id,
             parent_message_id: route.parent_message_id ?? null,
             body: body || "Shared an attachment.",
+            reasoning,
             activity: {
               status: event?.success === false ? "failed" : "completed",
               summary: "Completed an OpenClaw task requested from Haco.",
@@ -3501,7 +3537,7 @@ async fn dispatch_haco_message_to_openclaw(
         let url = if attachment.url.starts_with("/api/attachments/") {
             let signed = format!("{}:{expires}", attachment.id);
             let signature = hex_bytes(&hmac_sha256(target.hook_token.as_bytes(), signed.as_bytes()));
-            format!("{haco_url}/api/integrations/openclaw/attachments/{}?expires={expires}&signature={signature}", attachment.id)
+            format!("{}/api/integrations/openclaw/attachments/{}?expires={expires}&signature={signature}", haco_url.trim_end_matches('/'), attachment.id)
         } else {
             attachment.url.clone()
         };
@@ -3612,7 +3648,8 @@ async fn openclaw_event(
         attachments: event.attachments,
         reasoning: event.reasoning,
     };
-    let (message, duplicate, relay_targets, channel_thread_parent) = {
+    let url_preview = rich_preview_for_text(&state, &request.body).await;
+    let (message, relay_targets, channel_thread_parent) = {
         let mut store = state
             .store
             .lock()
@@ -3642,7 +3679,7 @@ async fn openclaw_event(
                 .openclaw_token()?
                 .ok_or_else(|| ApiError::service_unavailable("OpenClaw token is not configured"))?;
             let supplied_hash = format!("sha256:{}", hash_token(supplied_token));
-            if supplied_hash != expected_token && supplied_token != expected_token {
+            if supplied_hash != expected_token {
                 return Err(ApiError::unauthorized("invalid OpenClaw token"));
             }
             if !store.openclaw_principal_allowed(&request.sender_id)? {
@@ -3657,13 +3694,14 @@ async fn openclaw_event(
                 return Ok((StatusCode::OK, Json(message)));
             }
         }
-        let message = store.create_agent_message(&conversation_id, request, event.activity)?;
-        if let Some(delivery_id) = delivery_id.as_deref() {
-            store.record_openclaw_delivery(delivery_id, &message.id)?;
-        }
-        if let Some(test_id) = test_id.as_deref() {
-            store.complete_openclaw_test(&sender_id, test_id)?;
-        }
+        let message = store.create_agent_message_with_delivery_and_preview(
+            &conversation_id,
+            request,
+            event.activity,
+            delivery_id.as_deref(),
+            test_id.as_deref(),
+            url_preview,
+        )?;
         let _ = store.enqueue_webhook(
             "message.created",
             serde_json::to_value(&message)
@@ -3683,27 +3721,25 @@ async fn openclaw_event(
                 |row| row.get(0),
             )
             .map_err(ApiError::from)?;
-        (message, false, relay_targets, channel_thread_parent)
+        (message, relay_targets, channel_thread_parent)
     };
-    if !duplicate {
-        let _ = state
-            .events
-            .send(RealtimeEvent::MessageCreated(message.clone()));
-        queue_message_push(state.clone(), &message);
-        for target in relay_targets {
-            let state = state.clone();
-            let message = message.clone();
-            tokio::spawn(async move {
-                dispatch_haco_message_to_openclaw(
-                    state,
-                    target,
-                    message,
-                    channel_thread_parent,
-                    relay_depth.saturating_add(1),
-                )
-                .await;
-            });
-        }
+    let _ = state
+        .events
+        .send(RealtimeEvent::MessageCreated(message.clone()));
+    queue_message_push(state.clone(), &message);
+    for target in relay_targets {
+        let state = state.clone();
+        let message = message.clone();
+        tokio::spawn(async move {
+            dispatch_haco_message_to_openclaw(
+                state,
+                target,
+                message,
+                channel_thread_parent,
+                relay_depth.saturating_add(1),
+            )
+            .await;
+        });
     }
     Ok((StatusCode::CREATED, Json(message)))
 }
@@ -3903,11 +3939,31 @@ async fn handle_socket(
     store: Arc<Mutex<Store>>,
     mut principal: Principal,
 ) {
+    struct PresenceGuard {
+        principal: Principal,
+        event_sender: broadcast::Sender<RealtimeEvent>,
+        store: Arc<Mutex<Store>>,
+    }
+    impl Drop for PresenceGuard {
+        fn drop(&mut self) {
+            self.principal.presence = "offline".into();
+            if let Ok(mut store) = self.store.lock() {
+                let _ = store.set_presence(&self.principal.id, "offline");
+            }
+            let _ = self.event_sender.send(RealtimeEvent::PresenceUpdated(self.principal.clone()));
+        }
+    }
+    let _guard = PresenceGuard {
+        principal: principal.clone(),
+        event_sender: event_sender.clone(),
+        store: store.clone(),
+    };
     principal.presence = "online".into();
     if let Ok(mut store) = store.lock() {
         let _ = store.set_presence(&principal.id, "online");
     }
     let _ = event_sender.send(RealtimeEvent::PresenceUpdated(principal.clone()));
+    let mut ping_interval = tokio::time::interval(Duration::from_secs(25));
     loop {
         tokio::select! {
             inbound = socket.next() => match inbound {
@@ -3915,9 +3971,13 @@ async fn handle_socket(
                 Some(Ok(WsMessage::Ping(payload))) => {
                     if socket.send(WsMessage::Pong(payload)).await.is_err() { break; }
                 }
+                Some(Ok(WsMessage::Pong(_))) => {}
                 Some(Ok(_)) => {}
                 Some(Err(_)) => break,
             },
+            _ = ping_interval.tick() => {
+                if socket.send(WsMessage::Ping(Vec::new().into())).await.is_err() { break; }
+            }
             event = events.recv() => match event {
                 Ok(event) => {
                     let allowed = match &event {
@@ -3939,11 +3999,6 @@ async fn handle_socket(
             }
         }
     }
-    principal.presence = "offline".into();
-    if let Ok(mut store) = store.lock() {
-        let _ = store.set_presence(&principal.id, "offline");
-    }
-    let _ = event_sender.send(RealtimeEvent::PresenceUpdated(principal));
 }
 
 impl Store {
@@ -5052,18 +5107,28 @@ impl Store {
         &mut self,
         installed: bool,
         error: Option<&str>,
-    ) -> Result<(), ApiError> {
+    ) -> Result<Vec<String>, ApiError> {
         self.connection
             .execute(
                 "UPDATE openclaw_connector_config SET plugin_installed = ?1, last_error = ?2, updated_at = ?3 WHERE id = 1",
                 params![installed as i64, error, Utc::now().to_rfc3339()],
             )
             .map_err(ApiError::from)?;
+        let presence = if installed { "online" } else { "offline" };
         self.connection.execute(
             "UPDATE principals SET presence = ?1 WHERE id IN (SELECT principal_id FROM openclaw_connections WHERE enabled = 1)",
-            [if installed { "online" } else { "offline" }],
+            [presence],
         ).map_err(ApiError::from)?;
-        Ok(())
+        let mut statement = self
+            .connection
+            .prepare("SELECT principal_id FROM openclaw_connections WHERE enabled = 1")
+            .map_err(ApiError::from)?;
+        let principal_ids = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(ApiError::from)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(ApiError::from)?;
+        Ok(principal_ids)
     }
 
     fn is_openclaw_principal_mapped(&self, principal_id: &str) -> Result<bool, ApiError> {
@@ -5096,7 +5161,8 @@ impl Store {
         &self,
         openclaw_agent_id: &str,
     ) -> Result<(OpenClawDispatchTarget, String), ApiError> {
-        self.connection
+        let (target, conversation_id) = self
+            .connection
             .query_row(
                 "SELECT c.openclaw_agent_id, config.gateway_url, config.hook_token,
                         (SELECT conversation_id FROM openclaw_connection_conversations WHERE openclaw_agent_id = c.openclaw_agent_id ORDER BY conversation_id LIMIT 1)
@@ -5104,14 +5170,13 @@ impl Store {
                  WHERE c.openclaw_agent_id = ?1 AND c.enabled = 1",
                 [openclaw_agent_id],
                 |row| {
-                    Ok((
-                        OpenClawDispatchTarget {
-                            openclaw_agent_id: row.get(0)?,
-                            gateway_url: row.get(1)?,
-                            hook_token: row.get(2)?,
-                        },
-                        row.get(3)?,
-                    ))
+                    let target = OpenClawDispatchTarget {
+                        openclaw_agent_id: row.get(0)?,
+                        gateway_url: row.get(1)?,
+                        hook_token: row.get(2)?,
+                    };
+                    let conversation_id: Option<String> = row.get(3)?;
+                    Ok((target, conversation_id))
                 },
             )
             .map_err(|error| match error {
@@ -5119,7 +5184,13 @@ impl Store {
                     ApiError::not_found("connected OpenClaw agent not found")
                 }
                 other => ApiError::from(other),
-            })
+            })?;
+        let conversation_id = conversation_id.ok_or_else(|| {
+            ApiError::bad_request(
+                "OpenClaw agent has no conversations to test; add it to a forum or group first",
+            )
+        })?;
+        Ok((target, conversation_id))
     }
 
     fn begin_openclaw_test(
@@ -5958,7 +6029,7 @@ impl Store {
         request: CreateMessageRequest,
         url_preview: Option<UrlPreview>,
     ) -> Result<ChatMessage, ApiError> {
-        self.create_agent_message_with_preview(conversation_id, request, None, url_preview)
+        self.create_agent_message_with_preview(conversation_id, request, None, url_preview, None, None)
     }
 
     fn create_agent_message(
@@ -5967,12 +6038,35 @@ impl Store {
         request: CreateMessageRequest,
         activity: Option<AgentActivity>,
     ) -> Result<ChatMessage, ApiError> {
+        self.create_agent_message_with_delivery(conversation_id, request, activity, None, None)
+    }
+
+    fn create_agent_message_with_delivery(
+        &mut self,
+        conversation_id: &str,
+        request: CreateMessageRequest,
+        activity: Option<AgentActivity>,
+        openclaw_delivery_id: Option<&str>,
+        openclaw_test_id: Option<&str>,
+    ) -> Result<ChatMessage, ApiError> {
         let url_preview = if self.admin_settings()?.url_previews_enabled {
             preview_from_text(&request.body)
         } else {
             None
         };
-        self.create_agent_message_with_preview(conversation_id, request, activity, url_preview)
+        self.create_agent_message_with_preview(conversation_id, request, activity, url_preview, openclaw_delivery_id, openclaw_test_id)
+    }
+
+    fn create_agent_message_with_delivery_and_preview(
+        &mut self,
+        conversation_id: &str,
+        request: CreateMessageRequest,
+        activity: Option<AgentActivity>,
+        openclaw_delivery_id: Option<&str>,
+        openclaw_test_id: Option<&str>,
+        url_preview: Option<UrlPreview>,
+    ) -> Result<ChatMessage, ApiError> {
+        self.create_agent_message_with_preview(conversation_id, request, activity, url_preview, openclaw_delivery_id, openclaw_test_id)
     }
 
     fn create_agent_message_with_preview(
@@ -5981,6 +6075,8 @@ impl Store {
         request: CreateMessageRequest,
         activity: Option<AgentActivity>,
         url_preview: Option<UrlPreview>,
+        openclaw_delivery_id: Option<&str>,
+        openclaw_test_id: Option<&str>,
     ) -> Result<ChatMessage, ApiError> {
         let exists: Option<String> = self
             .connection
@@ -6142,6 +6238,27 @@ impl Store {
             for recipient_id in member_ids.into_iter().filter(|id| !notified.contains(id)) {
                 tx.execute("INSERT INTO notifications(id, principal_id, kind, conversation_id, message_id, actor_id, body, created_at) VALUES (?1, ?2, 'direct_message', ?3, ?4, ?5, ?6, ?7)", params![Uuid::new_v4().to_string(), recipient_id, message.conversation_id, message.id, message.sender.id, message.body.chars().take(180).collect::<String>(), message.created_at.to_rfc3339()]).map_err(ApiError::from)?;
             }
+        }
+        if let Some(delivery_id) = openclaw_delivery_id {
+            let inserted = tx.execute(
+                "INSERT OR IGNORE INTO openclaw_deliveries(delivery_id, message_id, created_at) VALUES (?1, ?2, ?3)",
+                params![delivery_id, message.id, Utc::now().to_rfc3339()],
+            ).map_err(ApiError::from)?;
+            if inserted == 0 {
+                let existing_id: String = tx.query_row(
+                    "SELECT message_id FROM openclaw_deliveries WHERE delivery_id = ?1",
+                    [delivery_id],
+                    |row| row.get(0),
+                ).map_err(ApiError::from)?;
+                tx.commit().map_err(ApiError::from)?;
+                return self.message(&existing_id);
+            }
+        }
+        if let Some(test_id) = openclaw_test_id {
+            tx.execute(
+                "UPDATE openclaw_connections SET pending_test_id = NULL, pending_test_at = NULL, last_test_at = ?1, last_error = NULL, updated_at = ?1 WHERE principal_id = ?2 AND pending_test_id = ?3 AND enabled = 1",
+                params![Utc::now().to_rfc3339(), message.sender.id, test_id],
+            ).map_err(ApiError::from)?;
         }
         tx.commit().map_err(ApiError::from)?;
         Ok(message)

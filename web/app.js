@@ -1,4 +1,4 @@
-const state = { conversations: [], selected: null, messages: [], currentUser: null, replyTo: null, threadRoot: null, socket: null, filter: 'all', adminToken: null, adminSettings: null, settingsTab: 'workspace', settingsView: 'personal', authStatus: null, users: [], conversationMembers: {}, modalSubmit: null, typingTimer: null, draftTimer: null, remoteTyping: new Map(), pendingAttachments: [], hasOlder: false, notifications: [], pushRegistration: null, pushConfiguration: null, openclawDiscovery: null, popoverMessage: null, richMode: false };
+const state = { conversations: [], selected: null, messages: [], currentUser: null, replyTo: null, threadRoot: null, socket: null, filter: 'all', adminToken: null, adminSettings: null, settingsTab: 'workspace', settingsView: 'personal', authStatus: null, users: [], conversationMembers: {}, modalSubmit: null, typingTimer: null, draftTimer: null, remoteTyping: new Map(), pendingAttachments: [], hasOlder: false, notifications: [], pushRegistration: null, pushConfiguration: null, openclawDiscovery: null, popoverMessage: null, richMode: false, loadingOlder: false, reconnectAttempts: 0 };
 const dom = {
   list: document.querySelector('#conversations'), forumList: document.querySelector('#forum-conversations'), directList: document.querySelector('#direct-conversations'), forumSection: document.querySelector('#forum-section'), directSection: document.querySelector('#direct-section'), feed: document.querySelector('#messages'), title: document.querySelector('#conversation-title'),
   kind: document.querySelector('#conversation-kind'), description: document.querySelector('#conversation-description'), status: document.querySelector('#connection-status'),
@@ -42,6 +42,20 @@ const dom = {
 const iconFor = (kind) => ({ channel: '#', group: '◉', direct: '@' }[kind] || '•');
 const labelFor = (kind) => ({ channel: 'Forum', group: 'Group chat', direct: 'Direct message' }[kind] || 'Conversation');
 const escapeHtml = (value) => value.replace(/[&<>"']/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character]));
+const renderMessageBody = (text) => {
+  const html = text.split(/(```[\s\S]*?```|`[^`]+`)/g).map((part) => {
+    if (part.startsWith('```') && part.endsWith('```')) {
+      const lang = part.slice(3, part.indexOf('\n')).trim();
+      const code = part.slice(3 + (lang ? lang.length + 1 : 0), -3);
+      return `<pre class="code-block${lang ? ` lang-${escapeHtml(lang)}` : ''}"><code>${escapeHtml(code)}</code></pre>`;
+    }
+    if (part.startsWith('`') && part.endsWith('`')) {
+      return `<code class="inline-code">${escapeHtml(part.slice(1, -1))}</code>`;
+    }
+    return part.replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" rel="noopener noreferrer" class="message-link">$1</a>');
+  }).join('');
+  return html.replace(/\n/g, '<br>');
+};
 const currentConversation = () => state.conversations.find((conversation) => conversation.id === state.selected);
 const isSharedConversation = (conversation = currentConversation()) => ['channel', 'group'].includes(conversation?.kind);
 const isOnline = (principal) => ['online', 'working'].includes(principal?.presence);
@@ -705,7 +719,7 @@ async function boot() {
   }
 }
 
-function render() { renderConversations(); renderHeader(); renderMessages(); }
+function render() { renderConversations(); renderHeader(); renderMessages(); updateSendButton(); }
 
 function renderProfile() {
   if (!state.currentUser) return;
@@ -775,6 +789,7 @@ function renderHeader() {
   }
   dom.manageConversation.hidden = !canManageConversation(conversation);
   if (!shared) closeMembersPopover();
+  if (!conversation) closeThread();
 }
 
 function closeMembersPopover() {
@@ -823,6 +838,14 @@ async function cacheConversationMembers(conversation = currentConversation()) {
 }
 
 function renderMessages() {
+  if (!state.selected) {
+    dom.feed.innerHTML = '<div class="empty-feed"><svg width="36" height="36" viewBox="0 0 36 36" fill="none" aria-hidden="true"><circle cx="18" cy="13" r="5" stroke="currentColor" stroke-width="1.5"/><path d="M4 32c0-5.5 4-10 14-10s14 4.5 14 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M18 1v4M18 22v4M6 6l3 3M27 9l-3 3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" opacity="0.4"/></svg><strong>No conversation selected</strong><p>Choose a conversation from the sidebar or create a new one.</p></div>';
+    dom.loadOlder.hidden = true;
+    dom.composer.hidden = true;
+    return;
+  }
+  dom.composer.hidden = false;
+  const scrollWasAtBottom = dom.feed.scrollTop >= dom.feed.scrollHeight - dom.feed.clientHeight - 20;
   dom.feed.innerHTML = '';
   const visibleMessages = isSharedConversation()
     ? state.messages.filter((message) => !message.parent_message_id)
@@ -830,7 +853,18 @@ function renderMessages() {
   visibleMessages.forEach((message) => dom.feed.append(createMessageNode(message)));
   if (!visibleMessages.length) dom.feed.innerHTML = '<div class="empty-feed"><svg width="36" height="36" viewBox="0 0 36 36" fill="none" aria-hidden="true"><circle cx="18" cy="13" r="5" stroke="currentColor" stroke-width="1.5"/><path d="M4 32c0-5.5 4-10 14-10s14 4.5 14 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M18 1v4M18 22v4M6 6l3 3M27 9l-3 3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" opacity="0.4"/></svg><strong>No messages yet</strong><p>Start the conversation with a person or agent.</p></div>';
   dom.loadOlder.hidden = !state.hasOlder;
-  dom.feed.scrollTop = dom.feed.scrollHeight;
+  const latestMessage = visibleMessages[visibleMessages.length - 1];
+  const dateLabel = document.querySelector('.date-divider span');
+  if (latestMessage) {
+    const msgDate = new Date(latestMessage.created_at);
+    const today = new Date();
+    const isToday = msgDate.toDateString() === today.toDateString();
+    dateLabel.textContent = isToday ? 'Today' : new Intl.DateTimeFormat([], { weekday: 'long', month: 'short', day: 'numeric' }).format(msgDate);
+  } else {
+    dateLabel.textContent = '';
+  }
+  if (!state.loadingOlder && scrollWasAtBottom) dom.feed.scrollTop = dom.feed.scrollHeight;
+  state.loadingOlder = false;
 }
 
 function appendQuotedReply(article, message) {
@@ -857,13 +891,27 @@ function createMessageNode(message, options = {}) {
   article.querySelector('.message-meta strong').textContent = message.sender.display_name;
   article.querySelector('.principal-kind').hidden = true;
   article.querySelector('time').textContent = new Intl.DateTimeFormat([], { hour: '2-digit', minute: '2-digit' }).format(new Date(message.created_at));
-  article.querySelector('.message-body').textContent = message.body;
+  article.querySelector('.message-body').innerHTML = renderMessageBody(message.body);
   article.classList.toggle('deleted', Boolean(message.is_deleted));
   article.querySelector('.edited-label').hidden = !message.edited_at;
   if (message.activity || message.reasoning) {
     const reasoning = article.querySelector('.reasoning-trace');
     reasoning.hidden = false;
     reasoning.querySelector('.thinking-summary').textContent = message.activity?.summary || 'The agent shared a brief activity update.';
+    if (message.reasoning?.content) {
+      const content = reasoning.querySelector('.thinking-content');
+      content.textContent = message.reasoning.content;
+      content.hidden = false;
+    }
+  }
+  if (message.activity) {
+    const activity = article.querySelector('.activity');
+    if (activity) {
+      activity.hidden = false;
+      activity.querySelector('.activity-title').textContent = message.activity.tool_name || 'Agent activity';
+      activity.querySelector('p').textContent = message.activity.summary || '';
+      activity.querySelector('.activity-pulse').className = `activity-pulse ${message.activity.status || 'completed'}`;
+    }
   }
   (message.attachments || []).forEach((attachment) => {
     let item;
@@ -876,7 +924,7 @@ function createMessageNode(message, options = {}) {
     } else if (attachment.media_type.startsWith('audio/')) {
       item = document.createElement('audio'); item.className = 'attachment-player'; item.controls = true; item.preload = 'metadata'; item.src = attachment.url;
     } else {
-      item = document.createElement('a'); item.className = 'attachment'; item.href = attachment.url; item.textContent = `📎 ${attachment.file_name} · ${formatBytes(attachment.byte_size)}`; item.target = '_blank';
+      item = document.createElement('a'); item.className = 'attachment'; item.href = attachment.url; item.textContent = `📎 ${attachment.file_name}${attachment.byte_size ? ` · ${formatBytes(attachment.byte_size)}` : ''}`; item.target = '_blank';
     }
     article.querySelector('.attachments').append(item);
   });
@@ -1000,7 +1048,7 @@ async function selectConversation(id) {
     state.messages = await request(`/api/conversations/${id}/messages?limit=50`);
     state.hasOlder = state.messages.length === 50;
     const draft = await request(`/api/conversations/${id}/draft`);
-    dom.input.value = draft.body || ''; resizeComposer();
+    dom.input.value = draft.body || ''; resizeComposer(); updateSendButton();
     renderMessages();
     await request(`/api/conversations/${id}/read`, { method: 'POST' });
     const conversation = currentConversation();
@@ -1110,7 +1158,14 @@ async function uploadFiles(files) {
 function renderPendingAttachments() {
   dom.pendingAttachments.hidden = !state.pendingAttachments.length;
   dom.pendingAttachments.innerHTML = state.pendingAttachments.map((attachment, index) => `<span>📎 ${escapeHtml(attachment.file_name)} <button type="button" data-remove="${index}">×</button></span>`).join('');
-  dom.pendingAttachments.querySelectorAll('[data-remove]').forEach((button) => button.addEventListener('click', () => { state.pendingAttachments.splice(Number(button.dataset.remove), 1); renderPendingAttachments(); }));
+  dom.pendingAttachments.querySelectorAll('[data-remove]').forEach((button) => button.addEventListener('click', () => { state.pendingAttachments.splice(Number(button.dataset.remove), 1); renderPendingAttachments(); updateSendButton(); }));
+  updateSendButton();
+}
+function updateSendButton() {
+  const sendButton = dom.composer?.querySelector('button[type="submit"]');
+  if (!sendButton) return;
+  const hasContent = dom.input.value.trim().length > 0 || state.pendingAttachments.length > 0;
+  sendButton.disabled = !hasContent;
 }
 function renderMentionSuggestions() {
   const match = dom.input.value.slice(0, dom.input.selectionStart).match(/@([A-Za-z0-9_-]*)$/);
@@ -1123,6 +1178,7 @@ function renderMentionSuggestions() {
 async function loadOlderMessages() {
   if (!state.messages.length || !state.selected) return;
   dom.loadOlder.disabled = true;
+  state.loadingOlder = true;
   try {
     const older = await request(`/api/conversations/${state.selected}/messages?limit=50&before=${encodeURIComponent(state.messages[0].created_at)}`);
     state.hasOlder = older.length === 50; state.messages = [...older, ...state.messages]; renderMessages();
@@ -1219,8 +1275,18 @@ function renderNotifications() {
 async function refreshConversations() {
   try { state.conversations = await request('/api/conversations'); renderConversations(); } catch (_) {}
 }
+async function catchUpMessages() {
+  if (!state.selected) return;
+  try {
+    const fresh = await request(`/api/conversations/${state.selected}/messages?limit=50`);
+    state.messages = fresh;
+    state.hasOlder = fresh.length === 50;
+    renderMessages();
+    await request(`/api/conversations/${state.selected}/read`, { method: 'POST' });
+  } catch (_) {}
+}
 function setStatus(text, online) {
-  dom.status.textContent = online ? (isOnline(state.currentUser) ? 'Online' : text) : text;
+  dom.status.textContent = text;
   if (online) applyPresence(dom.profilePresence, state.currentUser);
   else if (dom.profilePresence) dom.profilePresence.classList.replace('online', 'offline');
   dom.headerDot.classList.toggle('online', online);
@@ -1229,10 +1295,24 @@ function connectSocket() {
   const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
   const socket = new WebSocket(`${protocol}://${location.host}/ws`);
   state.socket = socket;
-  socket.onopen = () => setStatus('Live', true);
-  socket.onclose = () => { state.socket = null; if (state.currentUser) { setStatus('Reconnecting…', false); setTimeout(() => { if (state.currentUser) connectSocket(); }, 2000); } };
+  socket.onopen = () => { state.reconnectAttempts = 0; setStatus('Live', true); };
+  socket.onclose = () => {
+    state.socket = null;
+    if (state.currentUser) {
+      setStatus('Reconnecting…', false);
+      const delay = Math.min(2000 * Math.pow(2, state.reconnectAttempts), 30000);
+      state.reconnectAttempts++;
+      setTimeout(async () => {
+        if (!state.currentUser) return;
+        connectSocket();
+        refreshConversations();
+        catchUpMessages();
+      }, delay);
+    }
+  };
   socket.onmessage = (event) => {
-    const update = JSON.parse(event.data);
+    let update;
+    try { update = JSON.parse(event.data); } catch (_) { return; }
     if (update.type === 'message_created') {
       refreshConversations();
       refreshNotifications();
@@ -1349,8 +1429,11 @@ dom.input.addEventListener('input', () => {
   clearTimeout(state.typingTimer);
   state.typingTimer = setTimeout(() => sendTyping(false), 2200);
   clearTimeout(state.draftTimer);
-  state.draftTimer = setTimeout(() => { if (state.selected) request(`/api/conversations/${state.selected}/draft`, { method: 'PUT', body: JSON.stringify({ body: dom.input.value }) }).catch(() => {}); }, 500);
+  const draftConversationId = state.selected;
+  const draftValue = dom.input.value;
+  state.draftTimer = setTimeout(() => { if (draftConversationId) request(`/api/conversations/${draftConversationId}/draft`, { method: 'PUT', body: JSON.stringify({ body: draftValue }) }).catch(() => {}); }, 500);
   renderMentionSuggestions();
+  updateSendButton();
 });
 dom.threadInput.addEventListener('input', () => resizeTextArea(dom.threadInput));
 dom.input.addEventListener('keydown', (event) => {

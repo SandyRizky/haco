@@ -12,11 +12,26 @@ const textFromMessage = (message) => {
     .trim();
 };
 
+const reasoningFromMessage = (message) => {
+  if (!message) return null;
+  if (typeof message.reasoning === "string" && message.reasoning.trim()) return message.reasoning.trim();
+  if (!Array.isArray(message.content)) return null;
+  const parts = message.content.filter((part) => part && part.type === "reasoning" && typeof part.reasoning === "string" && part.reasoning.trim());
+  if (parts.length) return parts.map((part) => part.reasoning).join("\n").trim();
+  return null;
+};
+
 const mediaTypeFromUrl = (url) => {
   const path = String(url).split(/[?#]/, 1)[0].toLowerCase();
   if (/\.(png|jpe?g|gif|webp|avif|svg)$/.test(path)) return "image/" + (path.endsWith(".svg") ? "svg+xml" : path.match(/\.([a-z0-9]+)$/)?.[1]?.replace("jpg", "jpeg"));
   if (/\.(mp4|webm|mov)$/.test(path)) return "video/" + (path.endsWith(".mov") ? "quicktime" : path.match(/\.([a-z0-9]+)$/)?.[1]);
-  if (/\.(mp3|wav|ogg|m4a)$/.test(path)) return "audio/" + (path.match(/\.([a-z0-9]+)$/)?.[1] || "mpeg");
+  if (/\.(mp3|wav|ogg|m4a|flac)$/.test(path)) return "audio/" + (path.match(/\.([a-z0-9]+)$/)?.[1] || "mpeg");
+  if (/\.pdf$/i.test(path)) return "application/pdf";
+  if (/\.(zip|tar|gz|tgz|rar|7z)$/i.test(path)) return "application/" + (path.match(/\.([a-z0-9]+)$/)?.[1] || "zip");
+  if (/\.(doc|docx)$/i.test(path)) return "application/msword";
+  if (/\.(xls|xlsx)$/i.test(path)) return "application/vnd.ms-excel";
+  if (/\.(csv)$/i.test(path)) return "text/csv";
+  if (/\.(json)$/i.test(path)) return "application/json";
   return "application/octet-stream";
 };
 
@@ -54,6 +69,7 @@ const attachmentsFromMessage = async (message, hacoUrl, token, principalId) => {
 
 const deliverWithRetry = async (endpoint, token, payload) => {
   const delays = [0, 500, 1500, 3500];
+  let lastStatus = 0;
   let lastError;
   for (const delay of delays) {
     if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
@@ -65,11 +81,19 @@ const deliverWithRetry = async (endpoint, token, payload) => {
       });
       if (response.ok) return;
       const detail = await response.text();
+      lastStatus = response.status;
       lastError = new Error("Haco delivery failed (" + response.status + "): " + detail);
       if (response.status < 500 && response.status !== 408 && response.status !== 429) throw lastError;
     } catch (error) {
+      if (error instanceof TypeError && error.message === "fetch failed") {
+        lastError = error;
+        continue;
+      }
       lastError = error;
-      if (error?.message?.includes("Haco delivery failed (4") && !error?.message?.includes("408") && !error?.message?.includes("429")) throw error;
+      if (lastStatus >= 400 && lastStatus < 500 && lastStatus !== 408 && lastStatus !== 429) throw error;
+      if (!lastStatus && error?.message?.startsWith("Haco delivery failed (")) {
+        if (!error.message.includes("(5") && !error.message.includes("(408") && !error.message.includes("(429")) throw error;
+      }
     }
   }
   throw lastError ?? new Error("Haco delivery failed");
@@ -160,6 +184,7 @@ export default {
       const messages = Array.isArray(event?.messages) ? event.messages : [];
       const final = [...messages].reverse().find((message) => message?.role === "assistant");
       const body = textFromMessage(final);
+      const reasoning = reasoningFromMessage(final);
       const attachments = await attachmentsFromMessage(final, config.hacoUrl, config.token, principalId);
       if (!body && !attachments.length) {
         forgetRoute(event, context);
@@ -174,6 +199,7 @@ export default {
             conversation_id: route.conversation_id,
             parent_message_id: route.parent_message_id ?? null,
             body: body || "Shared an attachment.",
+            reasoning,
             activity: {
               status: event?.success === false ? "failed" : "completed",
               summary: "Completed an OpenClaw task requested from Haco.",
