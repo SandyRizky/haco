@@ -459,6 +459,7 @@ struct PrincipalCreateRequest {
     username: String,
     email: Option<String>,
     access_role: String,
+    password: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -1236,12 +1237,22 @@ async fn create_principal(
         &request.username,
         request.email.as_deref().unwrap_or("agent@local"),
     )?;
+    let password_hash = if request.kind == "human" {
+        if let Some(ref password) = request.password {
+            validate_password(password)?;
+            Some(hash_password(password)?)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
     let principal = {
         let mut store = state
             .store
             .lock()
             .map_err(|_| ApiError::internal("database lock poisoned"))?;
-        let principal = store.create_principal(request)?;
+        let principal = store.create_principal(request, password_hash)?;
         store.audit(
             Some(&admin.id),
             "principal.created",
@@ -5500,7 +5511,7 @@ impl Store {
         Ok(())
     }
 
-    fn create_principal(&mut self, request: PrincipalCreateRequest) -> Result<Principal, ApiError> {
+    fn create_principal(&mut self, request: PrincipalCreateRequest, password_hash: Option<String>) -> Result<Principal, ApiError> {
         if !matches!(request.kind.as_str(), "human" | "agent") {
             return Err(ApiError::bad_request(
                 "principal kind must be human or agent",
@@ -5516,8 +5527,8 @@ impl Store {
         }
         let id = Uuid::new_v4().to_string();
         self.connection.execute(
-            "INSERT INTO principals(id, display_name, username, email, kind, access_role, presence, disabled, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'offline', 0, ?7)",
-            params![id, request.display_name.trim(), request.username.trim().to_lowercase(), request.email.map(|value| value.trim().to_lowercase()), request.kind, role, Utc::now().to_rfc3339()],
+            "INSERT INTO principals(id, display_name, username, email, kind, access_role, password_hash, presence, disabled, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'offline', 0, ?8)",
+            params![id, request.display_name.trim(), request.username.trim().to_lowercase(), request.email.map(|value| value.trim().to_lowercase()), request.kind, role, password_hash, Utc::now().to_rfc3339()],
         ).map_err(map_identity_error)?;
         self.principal(&id)
     }
