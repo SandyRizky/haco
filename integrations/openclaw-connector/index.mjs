@@ -93,6 +93,17 @@ const decodeRoute = (sessionKey) => {
   }
 };
 
+const routeFromMessages = (messages) => {
+  let discovered = null;
+  for (const message of Array.isArray(messages) ? messages : []) {
+    for (const match of textFromMessage(message).matchAll(/\[\[haco-route:([0-9a-f]+)\]\]/gi)) {
+      const route = decodeRoute("hook:haco:" + match[1]);
+      if (route?.conversation_id) discovered = route;
+    }
+  }
+  return discovered;
+};
+
 export default {
   id: "haco-connector",
   name: "Haco Connector",
@@ -109,7 +120,7 @@ export default {
       context?.sessionKey ?? event?.sessionKey ?? event?.context?.sessionKey
     );
     const rememberRoute = (event, context) => {
-      const route = sessionRoute(event, context);
+      const route = sessionRoute(event, context) ?? routeFromMessages(event?.messages);
       if (route?.conversation_id) {
         for (const key of routeKeys(event, context)) routes.set(key, route);
       }
