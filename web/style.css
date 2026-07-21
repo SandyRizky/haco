@@ -580,6 +580,22 @@ select:focus-visible, summary:focus-visible, [tabindex]:focus-visible {
 
 .load-older:hover { border-color: var(--border-strong); color: var(--text); }
 
+.in-feed-date-divider {
+  display: flex; justify-content: center;
+  margin: 8px 0 14px;
+}
+
+.in-feed-date-divider span {
+  padding: 5px 11px;
+  border: 1px solid var(--border-glass);
+  border-radius: 999px;
+  color: var(--text-muted);
+  background: var(--surface-soft, rgba(255,255,255,0.11));
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+}
+
 /* Empty feed */
 .empty-feed, .thread-empty, .search-empty {
   display: grid; place-items: center; gap: 8px;
@@ -1152,7 +1168,7 @@ select:focus-visible, summary:focus-visible, [tabindex]:focus-visible {
 
 .thread-composer {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 38px;
+  grid-template-columns: 30px minmax(0, 1fr) 38px;
   align-items: end; gap: 7px;
   margin: 0 11px 11px;
   padding: 6px 7px 6px 10px;
@@ -1171,6 +1187,15 @@ select:focus-visible, summary:focus-visible, [tabindex]:focus-visible {
   background: transparent;
   font-size: 12px; line-height: 1.4;
 }
+
+.thread-attachment {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px;
+  border: 0; border-radius: 8px;
+  color: var(--text-muted); background: transparent;
+  cursor: pointer;
+}
+.thread-attachment:hover { color: var(--cyan); background: var(--cyan-soft); }
 
 /* ── Search Results & Notifications ─────────────────────────── */
 .search-results, .notifications-panel {
@@ -1777,6 +1802,21 @@ select:focus-visible, summary:focus-visible, [tabindex]:focus-visible {
   display: flex; justify-content: flex-end; gap: 7px;
   margin-top: 16px; padding-top: 13px;
   border-top: 1px solid var(--border-glass);
+}
+
+.secret-display { display: grid; gap: 14px; padding: 17px; }
+.secret-display p { color: var(--text-muted); font-size: 12px; margin: 0; }
+.secret-display .secret-token {
+  display: flex; align-items: center; gap: 10px;
+  padding: 12px 14px; border: 1px solid var(--border-glass);
+  border-radius: 10px; word-break: break-all;
+}
+.secret-display .secret-token code {
+  flex: 1; font-family: ui-monospace, monospace; font-size: 12px;
+  color: var(--text); line-height: 1.5;
+}
+.secret-display .secret-note {
+  color: var(--warning, #b76618); font-size: 11px; font-weight: 600;
 }
 
 .member-picker, .wizard-agent-picker { display: grid; gap: 6px; }
@@ -2618,6 +2658,15 @@ body {
   border-color: rgba(236, 169, 89, 0.42);
 }
 
+.message-highlight {
+  animation: message-flash 1.5s ease-out;
+}
+
+@keyframes message-flash {
+  0% { filter: brightness(1.4); }
+  100% { filter: brightness(1); }
+}
+
 /* Forums are a collection of posts, not a chat transcript. Root posts stay on
    the left and open their replies in the dedicated thread inspector. */
 .message-feed.forum-post-feed {
@@ -2771,4 +2820,8 @@ body {
   .composer.rich-mode textarea {
     min-height: 88px;
   }
+}
+
+@media (hover: none) {
+  .reply-button, .more-actions-button { opacity: 1; }
 }

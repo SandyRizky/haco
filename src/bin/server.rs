@@ -5996,20 +5996,21 @@ impl Store {
         if conversation.kind != ConversationKind::Direct {
             return Ok(());
         }
-        let other: Option<String> = self
+        let other: Option<(String, String)> = self
             .connection
             .query_row(
-                "SELECT p.display_name FROM conversation_members cm
+                "SELECT p.display_name, p.id FROM conversation_members cm
              JOIN principals p ON p.id = cm.principal_id
              WHERE cm.conversation_id = ?1 AND cm.principal_id != ?2
              ORDER BY p.display_name LIMIT 1",
                 params![conversation.id, viewer_id],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()
             .map_err(ApiError::from)?;
-        if let Some(display_name) = other {
+        if let Some((display_name, peer_id)) = other {
             conversation.title = display_name;
+            conversation.direct_peer_id = Some(peer_id);
         }
         Ok(())
     }
@@ -7148,6 +7149,7 @@ fn conversation_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Conversati
             .map(|value| parse_time(&value))
             .transpose()
             .map_err(to_sql_error)?,
+        direct_peer_id: None,
     })
 }
 

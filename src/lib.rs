@@ -43,6 +43,8 @@ pub struct Conversation {
     pub unread_count: u32,
     pub last_message_preview: Option<String>,
     pub last_message_at: Option<DateTime<Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub direct_peer_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

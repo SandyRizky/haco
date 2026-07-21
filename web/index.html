@@ -188,7 +188,7 @@
         <section id="notifications-panel" class="notifications-panel glass-raised" hidden>
           <header>
             <div><span class="eyebrow">Inbox</span><strong>Notifications</strong></div>
-            <button id="close-notifications" class="btn-icon" type="button">
+            <button id="close-notifications" class="btn-icon" type="button" aria-label="Close notifications">
               <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
             </button>
           </header>
@@ -291,8 +291,12 @@
         <section id="thread-messages" class="thread-feed" aria-label="Forum replies" aria-live="polite"></section>
 
         <form id="thread-composer" class="thread-composer glass-raised">
+          <button id="thread-attachment-button" class="composer-action thread-attachment" type="button" aria-label="Add attachment to reply" title="Add files">
+            <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true"><circle cx="9" cy="9" r="7.5" stroke="currentColor" stroke-width="1.3"/><path d="M9 5v8M5 9h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+          </button>
+          <input id="thread-attachment-input" type="file" multiple hidden />
           <textarea id="thread-input" rows="1" placeholder="Reply to Forum Thread…" aria-label="Forum Thread reply"></textarea>
-          <button type="submit" aria-label="Send Forum Thread reply">
+          <button type="submit" aria-label="Send Forum Thread reply" id="thread-send-button">
             <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M1 8 6 2l3 12L14.5 1.5 5 6Z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>
           </button>
         </form>
@@ -344,24 +348,24 @@
         </div>
 
         <div id="settings-workspace" class="settings-layout" hidden>
-          <nav class="settings-nav" aria-label="Settings sections">
-            <button class="settings-nav-item active" type="button" data-settings-tab="workspace">
+          <nav class="settings-nav" role="tablist" aria-label="Settings sections">
+            <button class="settings-nav-item active" type="button" role="tab" aria-selected="true" data-settings-tab="workspace">
               <span aria-hidden="true"><svg width="18" height="18" viewBox="0 0 18 18" fill="none"><rect x="1" y="1" width="7" height="7" rx="2" stroke="currentColor" stroke-width="1.3"/><rect x="10" y="1" width="7" height="7" rx="2" stroke="currentColor" stroke-width="1.3"/><rect x="1" y="10" width="7" height="7" rx="2" stroke="currentColor" stroke-width="1.3"/><rect x="10" y="10" width="7" height="7" rx="2" stroke="currentColor" stroke-width="1.3"/></svg></span>
               <span><strong>Workspace</strong><small>Identity and behavior</small></span>
             </button>
-            <button class="settings-nav-item" type="button" data-settings-tab="people">
+            <button class="settings-nav-item" type="button" role="tab" aria-selected="false" data-settings-tab="people">
               <span aria-hidden="true"><svg width="18" height="18" viewBox="0 0 18 18" fill="none"><circle cx="9" cy="5" r="3.5" stroke="currentColor" stroke-width="1.3"/><path d="M2 16c0-3.5 3-6.5 7-6.5s7 3 7 6.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></span>
               <span><strong>People & access</strong><small>Humans and agents</small></span>
             </button>
-            <button class="settings-nav-item" type="button" data-settings-tab="integrations">
+            <button class="settings-nav-item" type="button" role="tab" aria-selected="false" data-settings-tab="integrations">
               <span aria-hidden="true"><svg width="18" height="18" viewBox="0 0 18 18" fill="none"><circle cx="9" cy="9" r="4.5" stroke="currentColor" stroke-width="1.3"/><circle cx="9" cy="9" r="1.5" stroke="currentColor" stroke-width="1.3"/><path d="M9 1v3M9 14v3M1 9h3M14 9h3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></span>
               <span><strong>Integrations</strong><small>OpenClaw and APIs</small></span>
             </button>
-            <button class="settings-nav-item" type="button" data-settings-tab="security">
+            <button class="settings-nav-item" type="button" role="tab" aria-selected="false" data-settings-tab="security">
               <span aria-hidden="true"><svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M9 1 3 3.5v5c0 3.5 2.5 6.5 6 8 3.5-1.5 6-4.5 6-8v-5Z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M6.5 9 8.5 11l3.5-4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
               <span><strong>Security & storage</strong><small>Uploads and retention</small></span>
             </button>
-            <button class="settings-nav-item" type="button" data-settings-tab="system">
+            <button class="settings-nav-item" type="button" role="tab" aria-selected="false" data-settings-tab="system">
               <span aria-hidden="true"><svg width="18" height="18" viewBox="0 0 18 18" fill="none"><circle cx="9" cy="9" r="3.5" stroke="currentColor" stroke-width="1.3"/><path d="M9 1v3M9 14v3M1 9h3M14 9h3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
               <span><strong>System</strong><small>Server information</small></span>
             </button>
@@ -372,20 +376,20 @@
           </nav>
 
           <form id="settings-form" class="settings-content">
-            <section class="settings-page active" data-settings-page="workspace">
+            <section class="settings-page active" role="tabpanel" data-settings-page="workspace">
               <div class="settings-page-heading"><p class="eyebrow">General</p><h3>Workspace</h3><p>How this Haco installation appears and behaves for everyone.</p></div>
               <div class="settings-card"><label class="field"><span>Workspace name</span><small>Shown in the sidebar and page title.</small><input name="workspace_name" maxlength="80" required /></label><label class="field"><span>Public URL</span><small>The HTTPS address people and agents use to reach Haco.</small><input name="public_url" type="url" placeholder="https://haco.example.com" /></label></div>
               <div class="settings-card settings-toggle-list"><label class="toggle"><span><strong>Allow new registrations</strong><small>Let people create accounts without an invitation.</small></span><input name="registration_enabled" type="checkbox" /><i></i></label><label class="toggle"><span><strong>URL previews</strong><small>Generate link cards when messages contain a URL.</small></span><input name="url_previews_enabled" type="checkbox" /><i></i></label></div>
             </section>
 
-            <section class="settings-page" data-settings-page="people">
+            <section class="settings-page" role="tabpanel" data-settings-page="people">
               <div class="settings-page-heading"><p class="eyebrow">Directory</p><h3>People & agents</h3><p>Principals currently registered with this workspace.</p></div>
               <div class="settings-summary-grid"><div><strong id="human-count">0</strong><span>Humans</span></div><div><strong id="agent-count">0</strong><span>Agents</span></div></div>
               <div class="settings-toolbar"><button id="create-human" class="btn-primary" type="button">Add person</button><button id="create-agent" class="btn-secondary" type="button">Add agent</button><button id="create-invite" class="btn-secondary" type="button">Create invitation</button></div>
               <div id="settings-users" class="settings-card settings-users"></div>
             </section>
 
-            <section class="settings-page" data-settings-page="integrations">
+            <section class="settings-page" role="tabpanel" data-settings-page="integrations">
               <div class="settings-page-heading"><p class="eyebrow">Connections</p><h3>Integrations</h3><p>Connect agent runtimes and external automation to Haco.</p></div>
               <div class="settings-card integration-card">
                 <div class="integration-heading">
@@ -435,7 +439,7 @@
               </div>
             </section>
 
-            <section class="settings-page" data-settings-page="security">
+            <section class="settings-page" role="tabpanel" data-settings-page="security">
               <div class="settings-page-heading"><p class="eyebrow">Data controls</p><h3>Security & storage</h3><p>Set server-wide limits for files and retained chat history.</p></div>
               <div class="settings-card field-grid">
                 <label class="field"><span>Maximum upload size</span><small>Per attachment, in megabytes.</small><div class="input-suffix"><input name="max_upload_mb" type="number" min="1" max="1024" required /><span>MB</span></div></label>
@@ -445,7 +449,7 @@
               <div class="settings-card security-note"><strong>Lifecycle jobs run automatically</strong><p>Expired sessions and stale unclaimed uploads are cleaned hourly. Message retention removes expired messages and their stored attachments.</p><button id="run-retention" class="btn-secondary" type="button">Run cleanup now</button><small id="retention-status"></small></div>
             </section>
 
-            <section class="settings-page" data-settings-page="system">
+            <section class="settings-page" role="tabpanel" data-settings-page="system">
               <div class="settings-page-heading"><p class="eyebrow">Instance</p><h3>System</h3><p>Useful details for operating this self-hosted server.</p></div>
               <div class="system-status glass-utility">
                 <span><i class="dot online"></i> Server online</span>
@@ -483,7 +487,7 @@
       <section class="workspace-modal-card glass-raised" role="dialog" aria-modal="true" aria-labelledby="workspace-modal-title">
         <header>
           <div><p class="eyebrow">Workspace action</p><h2 id="workspace-modal-title"></h2></div>
-          <button id="close-workspace-modal" class="btn-icon" type="button">
+          <button id="close-workspace-modal" class="btn-icon" type="button" aria-label="Close">
             <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
           </button>
         </header>
@@ -507,12 +511,12 @@
     </div>
 
     <!-- Message Actions Popover -->
-    <div id="message-actions-popover" class="message-actions-popover glass-raised" hidden>
-      <button class="popover-action" type="button" data-action="react">React</button>
-      <button class="popover-action" type="button" data-action="pin">Pin</button>
-      <button class="popover-action" type="button" data-action="save">Save</button>
-      <button class="popover-action" type="button" data-action="edit">Edit</button>
-      <button class="popover-action popover-danger" type="button" data-action="delete">Delete</button>
+    <div id="message-actions-popover" class="message-actions-popover glass-raised" role="menu" hidden>
+      <button class="popover-action" type="button" role="menuitem" data-action="react">React</button>
+      <button class="popover-action" type="button" role="menuitem" data-action="pin">Pin</button>
+      <button class="popover-action" type="button" role="menuitem" data-action="save">Save</button>
+      <button class="popover-action" type="button" role="menuitem" data-action="edit">Edit</button>
+      <button class="popover-action popover-danger" type="button" role="menuitem" data-action="delete">Delete</button>
     </div>
 
     <!-- Templates -->

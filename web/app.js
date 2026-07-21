@@ -1,4 +1,4 @@
-const state = { conversations: [], selected: null, messages: [], currentUser: null, replyTo: null, threadRoot: null, socket: null, filter: 'all', adminToken: null, adminSettings: null, settingsTab: 'workspace', settingsView: 'personal', authStatus: null, users: [], conversationMembers: {}, modalSubmit: null, typingTimer: null, draftTimer: null, remoteTyping: new Map(), pendingAttachments: [], hasOlder: false, notifications: [], pushRegistration: null, pushConfiguration: null, openclawDiscovery: null, popoverMessage: null, richMode: false, loadingOlder: false, reconnectAttempts: 0, agentThinking: null, streamingReasoning: null };
+const state = { conversations: [], selected: null, messages: [], currentUser: null, replyTo: null, threadRoot: null, socket: null, filter: 'all', adminToken: null, adminSettings: null, settingsTab: 'workspace', settingsView: 'personal', authStatus: null, users: [], conversationMembers: {}, modalSubmit: null, typingTimer: null, draftTimer: null, remoteTyping: new Map(), pendingAttachments: [], threadPendingAttachments: [], hasOlder: false, notifications: [], pushRegistration: null, pushConfiguration: null, openclawDiscovery: null, popoverMessage: null, richMode: false, loadingOlder: false, reconnectAttempts: 0, agentThinking: null, streamingReasoning: null, sending: false, _selectGeneration: 0 };
 const dom = {
   list: document.querySelector('#conversations'), forumList: document.querySelector('#forum-conversations'), directList: document.querySelector('#direct-conversations'), forumSection: document.querySelector('#forum-section'), directSection: document.querySelector('#direct-section'), feed: document.querySelector('#messages'), title: document.querySelector('#conversation-title'),
   kind: document.querySelector('#conversation-kind'), description: document.querySelector('#conversation-description'), status: document.querySelector('#connection-status'),
@@ -10,7 +10,7 @@ const dom = {
   profileName: document.querySelector('#profile-name'), profileAvatar: document.querySelector('#profile-avatar'), profilePresence: document.querySelector('#profile-presence'), filters: [...document.querySelectorAll('.filter')],
   appShell: document.querySelector('.app-shell'), threadPanel: document.querySelector('#thread-panel'), threadRoot: document.querySelector('#thread-root'),
   threadMessages: document.querySelector('#thread-messages'), threadCount: document.querySelector('#thread-count'), closeThread: document.querySelector('#close-thread'),
-  threadComposer: document.querySelector('#thread-composer'), threadInput: document.querySelector('#thread-input'),
+  threadComposer: document.querySelector('#thread-composer'), threadInput: document.querySelector('#thread-input'), threadAttachmentButton: document.querySelector('#thread-attachment-button'), threadAttachmentInput: document.querySelector('#thread-attachment-input'), threadSendButton: document.querySelector('#thread-send-button'),
   openSettings: document.querySelector('#open-settings'), settingsOverlay: document.querySelector('#settings-overlay'), closeSettings: document.querySelector('#close-settings'),
   settingsPersonal: document.querySelector('#settings-personal'), settingsEyebrow: document.querySelector('#settings-eyebrow'), showPersonalSettings: document.querySelector('#show-personal-settings'), openWorkspaceSettings: document.querySelector('#open-workspace-settings'), themePreference: document.querySelector('#theme-preference'),
   personalProfileName: document.querySelector('#personal-profile-name'), personalProfileAvatar: document.querySelector('#personal-profile-avatar'), personalProfilePresence: document.querySelector('#personal-profile-presence'), personalProfileStatus: document.querySelector('#personal-profile-status'),
@@ -42,6 +42,16 @@ const dom = {
 const iconFor = (kind) => ({ channel: '#', group: '◉', direct: '@' }[kind] || '•');
 const labelFor = (kind) => ({ channel: 'Forum', group: 'Group chat', direct: 'Direct message' }[kind] || 'Conversation');
 const escapeHtml = (value) => value.replace(/[&<>"']/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character]));
+const formatMessageDate = (createdAt) => {
+  const msgDate = new Date(createdAt);
+  const today = new Date();
+  const isToday = msgDate.toDateString() === today.toDateString();
+  const yesterday = new Date(today); yesterday.setDate(yesterday.getDate() - 1);
+  const isYesterday = msgDate.toDateString() === yesterday.toDateString();
+  if (isToday) return 'Today';
+  if (isYesterday) return 'Yesterday';
+  return new Intl.DateTimeFormat([], { weekday: 'long', month: 'short', day: 'numeric' }).format(msgDate);
+};
 const renderMessageBody = (text) => {
   if (!text) return '';
   const html = text.split(/(```[\s\S]*?```|`[^`]+`)/g).map((part) => {
@@ -54,7 +64,7 @@ const renderMessageBody = (text) => {
     if (part.startsWith('`') && part.endsWith('`')) {
       return `<code class="inline-code">${escapeHtml(part.slice(1, -1))}</code>`;
     }
-    return part.replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" rel="noopener noreferrer" class="message-link">$1</a>');
+    return escapeHtml(part).replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" rel="noopener noreferrer" class="message-link">$1</a>');
   }).join('');
   return html.replace(/\n/g, '<br>');
 };
@@ -65,6 +75,7 @@ const initialsFor = (name = '') => name.trim().split(/\s+/).filter(Boolean).slic
 const symbolFor = (conversation) => conversation?.icon?.trim() || iconFor(conversation?.kind);
 const conversationRoleForCurrentUser = (conversation = currentConversation()) => state.conversationMembers[conversation?.id]?.find((member) => member.principal?.id === state.currentUser?.id)?.role || null;
 const canManageConversation = (conversation = currentConversation()) => Boolean(isSharedConversation(conversation) && (state.currentUser?.access_role === 'admin' || ['owner', 'admin'].includes(conversationRoleForCurrentUser(conversation))));
+const isGuest = () => state.currentUser?.access_role === 'guest';
 const titleForRole = (member) => {
   const role = member?.role;
   if (role) return role.replace(/^./, (letter) => letter.toUpperCase());
@@ -484,6 +495,9 @@ function openWorkspaceModal(title, body, submit, submitLabel = 'Save changes') {
   dom.workspaceModalTitle.textContent = title;
   dom.workspaceModalBody.innerHTML = body;
   dom.workspaceModalError.hidden = true;
+  dom.workspaceModalForm.hidden = false;
+  dom.workspaceModalCancel.hidden = false;
+  dom.workspaceModalSubmit.onclick = null;
   state.modalSubmit = submit;
   dom.workspaceModalSubmit.textContent = submitLabel;
   dom.workspaceModal.hidden = false;
@@ -493,7 +507,28 @@ function openWorkspaceModal(title, body, submit, submitLabel = 'Save changes') {
 function closeWorkspaceModal() {
   dom.workspaceModal.hidden = true;
   dom.workspaceModalBody.innerHTML = '';
+  dom.workspaceModalForm.hidden = false;
+  dom.workspaceModalCancel.hidden = false;
   state.modalSubmit = null;
+  dom.workspaceModalSubmit.onclick = null;
+}
+
+function showOneTimeSecret(label, token, description) {
+  dom.workspaceModalTitle.textContent = label;
+  dom.workspaceModalCancel.hidden = true;
+  dom.workspaceModalSubmit.textContent = 'Close';
+  dom.workspaceModalSubmit.onclick = (e) => { e.preventDefault(); closeWorkspaceModal(); };
+  dom.workspaceModalForm.hidden = true;
+  dom.workspaceModalBody.innerHTML = `<div class="secret-display"><p>${escapeHtml(description)}</p><div class="secret-token glass-raised"><code>${escapeHtml(token)}</code><button class="btn-secondary copy-secret" type="button">Copy</button></div><p class="secret-note">This value will not be shown again.</p></div>`;
+  dom.workspaceModal.hidden = false;
+  dom.workspaceModalBody.querySelector('.copy-secret').addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(token);
+      dom.workspaceModalBody.querySelector('.copy-secret').textContent = 'Copied!';
+    } catch (_) {
+      dom.workspaceModalBody.querySelector('.copy-secret').textContent = 'Copy failed';
+    }
+  });
 }
 
 const memberChecklist = (selected = [], roles = null) => {
@@ -562,7 +597,7 @@ function openCreatePrincipal(kind) {
 function openCreateInvite() {
   openWorkspaceModal('Create invitation', `<label class="settings-field"><span>Email (optional)</span><input name="email" type="email" /></label><div class="settings-field-grid"><label class="settings-field"><span>Role</span><select name="access_role"><option value="member">Member</option><option value="guest">Guest</option><option value="admin">Administrator</option></select></label><label class="settings-field"><span>Expires in</span><select name="expires_in_days"><option value="1">1 day</option><option value="7" selected>7 days</option><option value="30">30 days</option></select></label></div>`, async (form) => {
     const invite = await request('/api/admin/invites', { method: 'POST', body: JSON.stringify({ email: form.email.value || null, access_role: form.access_role.value, expires_in_days: Number(form.expires_in_days.value) }) });
-    closeWorkspaceModal(); window.prompt('Copy this invitation token and send it securely. It is shown only once.', invite.token);
+    showOneTimeSecret('Invitation token', invite.token, 'Copy this invitation token and send it securely. It expires in the selected period.');
   });
 }
 
@@ -582,6 +617,7 @@ async function openEditPrincipal(user) {
 function fillSettingsForm() {
   const settings = state.adminSettings;
   if (!settings) return;
+  state._settingsInitial = { ...settings };
   const fields = dom.settingsForm.elements;
   Object.entries(settings).forEach(([name, value]) => {
     const field = fields.namedItem(name);
@@ -601,6 +637,25 @@ function fillSettingsForm() {
   document.querySelector('#openclaw-endpoint').textContent = `${base}/api/integrations/openclaw/events`;
   document.querySelector('#agent-api-endpoint').textContent = `${base}/api/integrations/agents/events`;
   document.querySelector('#system-origin').textContent = location.origin;
+  updateSettingsSaveState();
+}
+
+function updateSettingsSaveState() {
+  const saveButton = document.querySelector('#save-settings');
+  if (!saveButton || !state._settingsInitial) return;
+  const fields = dom.settingsForm.elements;
+  let dirty = false;
+  for (const name of Object.keys(state._settingsInitial)) {
+    const field = fields.namedItem(name);
+    if (!field) continue;
+    const current = field.type === 'checkbox' ? field.checked : field.value;
+    const initial = field.type === 'checkbox' ? Boolean(state._settingsInitial[name]) : (state._settingsInitial[name] ?? '');
+    if (current !== initial) { dirty = true; break; }
+  }
+  const tokenVal = fields.namedItem('openclaw_token')?.value.trim() || '';
+  const secretVal = fields.namedItem('webhook_secret')?.value.trim() || '';
+  if (tokenVal || secretVal) dirty = true;
+  saveButton.disabled = !dirty;
 }
 
 function renderSettingsUsers(users) {
@@ -613,7 +668,7 @@ function renderSettingsUsers(users) {
     const canEditRole = state.currentUser?.access_role === 'admin' && user.kind === 'human' && user.id !== state.currentUser.id;
     const role = escapeHtml(user.access_role || user.kind);
     const roleControl = canEditRole
-      ? `<select class="settings-role-select" data-role-user="${escapeHtml(user.id)}" aria-label="Access role for ${escapeHtml(user.display_name)}">${['admin', 'member', 'guest'].map((option) => `<option value="${option}" ${option === user.access_role ? 'selected' : ''}>${option}</option>`).join('')}</select>`
+      ? `<select class="settings-role-select" data-role-user="${escapeHtml(user.id)}" data-user-disabled="${user.disabled}" aria-label="Access role for ${escapeHtml(user.display_name)}">${['admin', 'member', 'guest'].map((option) => `<option value="${option}" ${option === user.access_role ? 'selected' : ''}>${option}</option>`).join('')}</select>`
       : `<b>${role}</b>`;
     const securityAction = state.currentUser?.access_role === 'admin' ? `<button class="settings-inline-button" type="button" data-edit-user="${escapeHtml(user.id)}">Edit</button>${user.kind === 'human' ? `<button class="settings-inline-button" type="button" data-reset-user="${escapeHtml(user.id)}">Reset</button>` : `<button class="settings-inline-button" type="button" data-agent-key="${escapeHtml(user.id)}">New key</button>`}` : '';
     return `<div class="settings-user ${user.disabled ? 'disabled' : ''}"><span class="avatar-stack settings-avatar-stack"><span class="settings-user-avatar ${user.kind === 'agent' ? 'agent' : ''}">${escapeHtml(initialsFor(user.display_name))}</span><span class="presence-bar ${user.kind === 'agent' ? 'agent' : 'human'} ${isOnline(user) ? 'online' : 'offline'}"></span></span><span class="settings-user-copy"><strong>${escapeHtml(user.display_name)}</strong><small>@${escapeHtml(user.username)}${user.disabled ? ' · disabled' : ''}</small></span><span class="settings-user-actions">${roleControl}${securityAction}</span></div>`;
@@ -621,7 +676,7 @@ function renderSettingsUsers(users) {
   dom.settingsUsers.querySelectorAll('[data-role-user]').forEach((select) => select.addEventListener('change', async () => {
     select.disabled = true;
     try {
-      await request(`/api/admin/users/${encodeURIComponent(select.dataset.roleUser)}/access`, { method: 'POST', body: JSON.stringify({ access_role: select.value, disabled: false }) });
+      await request(`/api/admin/users/${encodeURIComponent(select.dataset.roleUser)}/access`, { method: 'POST', body: JSON.stringify({ access_role: select.value, disabled: select.dataset.userDisabled === 'true' }) });
       dom.settingsSaveStatus.textContent = 'Access updated';
     } catch (error) {
       dom.settingsFormError.textContent = error.message;
@@ -632,7 +687,7 @@ function renderSettingsUsers(users) {
     button.disabled = true;
     try {
       const result = await request(`/api/admin/users/${encodeURIComponent(button.dataset.resetUser)}/reset-password`, { method: 'POST' });
-      window.prompt('Copy this one-time password reset token. It expires in 30 minutes.', result.token);
+      showOneTimeSecret('Reset token', result.token, 'Copy this one-time password reset token. It expires in 30 minutes.');
     } catch (error) { dom.settingsFormError.textContent = error.message; dom.settingsFormError.hidden = false; }
     finally { button.disabled = false; }
   }));
@@ -640,7 +695,7 @@ function renderSettingsUsers(users) {
     button.disabled = true;
     try {
       const result = await request(`/api/admin/agents/${encodeURIComponent(button.dataset.agentKey)}/keys`, { method: 'POST', body: JSON.stringify({ name: 'Admin-created key', scopes: ['messages:write', 'activity:write'] }) });
-      window.prompt('Copy this agent key now. Haco will not display it again.', result.token);
+      showOneTimeSecret('Agent key', result.token, 'Copy this agent key now. Haco will not display it again.');
     } catch (error) { dom.settingsFormError.textContent = error.message; dom.settingsFormError.hidden = false; }
     finally { button.disabled = false; }
   }));
@@ -649,7 +704,10 @@ function renderSettingsUsers(users) {
 
 function selectSettingsTab(tab) {
   state.settingsTab = tab;
-  document.querySelectorAll('[data-settings-tab]').forEach((button) => button.classList.toggle('active', button.dataset.settingsTab === tab));
+  document.querySelectorAll('[data-settings-tab]').forEach((button) => {
+    button.classList.toggle('active', button.dataset.settingsTab === tab);
+    button.setAttribute('aria-selected', String(button.dataset.settingsTab === tab));
+  });
   document.querySelectorAll('[data-settings-page]').forEach((page) => page.classList.toggle('active', page.dataset.settingsPage === tab));
 }
 
@@ -734,13 +792,15 @@ function renderProfile() {
 }
 
 function directPeerFor(conversation) {
+  if (conversation.direct_peer_id) return state.users.find((user) => user.id === conversation.direct_peer_id);
   return state.users.find((user) => user.id !== state.currentUser?.id && (user.display_name === conversation.title || user.username === conversation.title));
 }
 
 function renderConversations() {
   dom.forumList.innerHTML = '';
   dom.directList.innerHTML = '';
-  dom.newForum.hidden = false;
+  dom.newForum.hidden = isGuest();
+  dom.newDirectMessage.hidden = !state.currentUser || isGuest();
   const filtered = state.conversations.filter((conversation) => state.filter === 'all' || (state.filter === 'channel' ? ['channel', 'group'].includes(conversation.kind) : conversation.kind === state.filter));
   dom.conversationCount.textContent = `${filtered.length}`;
   filtered.forEach((conversation) => {
@@ -846,39 +906,78 @@ function renderMessages() {
     if (dom.composer) dom.composer.hidden = true;
     return;
   }
-  if (dom.composer) dom.composer.hidden = false;
+  if (dom.composer) dom.composer.hidden = isGuest();
+  dom.manageConversation.hidden = !canManageConversation() || isGuest();
   const scrollWasAtBottom = dom.feed.scrollTop >= dom.feed.scrollHeight - dom.feed.clientHeight - 20;
-  dom.feed.innerHTML = '';
   const sharedConversation = isSharedConversation();
   dom.feed.classList.toggle('forum-post-feed', sharedConversation);
   const visibleMessages = sharedConversation
     ? state.messages.filter((message) => !message.parent_message_id)
     : state.messages;
-  visibleMessages.forEach((message) => {
-    try {
-      dom.feed.append(createMessageNode(message));
-    } catch (error) {
-      console.error('Unable to render chat message', { messageId: message?.id, error });
-      dom.feed.append(createMessageFallbackNode(message));
+
+  const existingNodes = new Map();
+  const nonMessageNodes = [];
+  for (const child of dom.feed.children) {
+    if (child.dataset.messageId) existingNodes.set(child.dataset.messageId, child);
+    else if (!child.classList.contains('thinking-done') && !child.classList.contains('thinking-fade-in') && child.tagName !== 'DIV') nonMessageNodes.push(child);
+  }
+  nonMessageNodes.forEach((n) => n.remove());
+
+  visibleMessages.forEach((message, index) => {
+    let node = existingNodes.get(message.id);
+    if (node) {
+      existingNodes.delete(message.id);
+      const currentIndex = [...dom.feed.children].indexOf(node);
+      if (currentIndex !== index && currentIndex >= 0) {
+        dom.feed.insertBefore(node, dom.feed.children[index] || null);
+      }
+    } else {
+      try {
+        node = createMessageNode(message);
+      } catch (error) {
+        console.error('Unable to render chat message', { messageId: message?.id, error });
+        node = createMessageFallbackNode(message);
+      }
+      dom.feed.insertBefore(node, dom.feed.children[index] || null);
     }
   });
-  if (!sharedConversation && state.agentThinking && !state.streamingReasoning) dom.feed.append(createLiveThinkingNode(state.agentThinking));
-  if (!sharedConversation && state.streamingReasoning?.agentId) dom.feed.append(createLiveThinkingNode(state.streamingReasoning));
-  if (!visibleMessages.length && !state.streamingReasoning && !state.agentThinking) dom.feed.innerHTML = '<div class="empty-feed"><svg width="36" height="36" viewBox="0 0 36 36" fill="none" aria-hidden="true"><circle cx="18" cy="13" r="5" stroke="currentColor" stroke-width="1.5"/><path d="M4 32c0-5.5 4-10 14-10s14 4.5 14 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M18 1v4M18 22v4M6 6l3 3M27 9l-3 3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" opacity="0.4"/></svg><strong>No messages yet</strong><p>Start the conversation with a person or agent.</p></div>';
+
+  existingNodes.forEach((node) => node.remove());
+
+  dom.feed.querySelectorAll('.in-feed-date-divider').forEach((d) => d.remove());
+  let lastDate = null;
+  [...dom.feed.querySelectorAll('[data-message-id]')].forEach((el) => {
+    const msg = visibleMessages.find((m) => m.id === el.dataset.messageId);
+    if (!msg) return;
+    const msgDate = new Date(msg.created_at).toDateString();
+    if (msgDate !== lastDate) {
+      lastDate = msgDate;
+      const divider = document.createElement('div');
+      divider.className = 'in-feed-date-divider';
+      divider.innerHTML = `<span>${formatMessageDate(msg.created_at)}</span>`;
+      el.before(divider);
+    }
+  });
+
+  const existingThinking = dom.feed.querySelector('.message.agent.thinking-fade-in');
+  if (existingThinking) existingThinking.remove();
+  if (!sharedConversation) {
+    const thinking = state.streamingReasoning;
+    if (thinking?.conversationId === state.selected) {
+      dom.feed.append(createLiveThinkingNode(thinking));
+    } else if (!thinking && state.agentThinking?.conversationId === state.selected) {
+      dom.feed.append(createLiveThinkingNode(state.agentThinking));
+    }
+  }
+
+  if (!visibleMessages.length && !(state.streamingReasoning?.conversationId === state.selected) && !(state.agentThinking?.conversationId === state.selected)) dom.feed.innerHTML = '<div class="empty-feed"><svg width="36" height="36" viewBox="0 0 36 36" fill="none" aria-hidden="true"><circle cx="18" cy="13" r="5" stroke="currentColor" stroke-width="1.5"/><path d="M4 32c0-5.5 4-10 14-10s14 4.5 14 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M18 1v4M18 22v4M6 6l3 3M27 9l-3 3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" opacity="0.4"/></svg><strong>No messages yet</strong><p>Start the conversation with a person or agent.</p></div>';
   dom.loadOlder.hidden = !state.hasOlder;
   const latestMessage = visibleMessages[visibleMessages.length - 1];
   const dateLabel = document.querySelector('.date-divider span');
   if (dateLabel) {
-    if (latestMessage) {
-      const msgDate = new Date(latestMessage.created_at);
-      const today = new Date();
-      const isToday = msgDate.toDateString() === today.toDateString();
-      dateLabel.textContent = isToday ? 'Today' : new Intl.DateTimeFormat([], { weekday: 'long', month: 'short', day: 'numeric' }).format(msgDate);
-    } else {
-      dateLabel.textContent = '';
-    }
+    dateLabel.textContent = latestMessage ? formatMessageDate(latestMessage.created_at) : '';
   }
-  if (!state.loadingOlder && (scrollWasAtBottom || state.streamingReasoning || state.agentThinking)) {
+  if (!state.loadingOlder && (scrollWasAtBottom || state.streamingReasoning?.conversationId === state.selected || state.agentThinking?.conversationId === state.selected)) {
     requestAnimationFrame(() => { dom.feed.scrollTop = dom.feed.scrollHeight; });
   }
   state.loadingOlder = false;
@@ -1096,7 +1195,7 @@ async function removeMessage(message) {
   } catch (error) { setStatus(error.message, false); }
 }
 
-async function selectConversation(id) {
+async function selectConversation(id, targetMessageId = null) {
   state.selected = id;
   state.replyTo = null;
   state.agentThinking = null;
@@ -1110,13 +1209,27 @@ async function selectConversation(id) {
   closeMobileSidebar();
   renderTyping();
   state.pendingAttachments = []; renderPendingAttachments();
+  const generation = ++state._selectGeneration;
   try {
     state.messages = await request(`/api/conversations/${id}/messages?limit=50`);
+    if (generation !== state._selectGeneration) return;
     state.hasOlder = state.messages.length === 50;
     const draft = await request(`/api/conversations/${id}/draft`);
+    if (generation !== state._selectGeneration) return;
     dom.input.value = draft.body || ''; resizeComposer(); updateSendButton();
     renderMessages();
+    if (targetMessageId) {
+      requestAnimationFrame(() => {
+        const el = document.querySelector(`[data-message-id="${CSS.escape(targetMessageId)}"]`);
+        if (el) {
+          el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          el.classList.add('message-highlight');
+          setTimeout(() => el.classList.remove('message-highlight'), 2000);
+        }
+      });
+    }
     await request(`/api/conversations/${id}/read`, { method: 'POST' });
+    if (generation !== state._selectGeneration) return;
     const conversation = currentConversation();
     if (conversation) conversation.unread_count = 0;
     renderConversations();
@@ -1164,37 +1277,58 @@ function renderThread() {
   dom.threadMessages.innerHTML = '';
   dom.threadRoot.append(createMessageNode(state.threadRoot, { thread: true }));
   replies.forEach((reply) => dom.threadMessages.append(createMessageNode(reply, { thread: true })));
-  if (state.streamingReasoning?.parentMessageId === state.threadRoot.id) {
+  if (state.streamingReasoning?.conversationId === state.selected && state.streamingReasoning?.parentMessageId === state.threadRoot.id) {
     dom.threadMessages.append(createLiveThinkingNode(state.streamingReasoning, { thread: true }));
   }
   dom.threadCount.textContent = `${replies.length} ${replies.length === 1 ? 'reply' : 'replies'}`;
   document.querySelector('.thread-header .eyebrow').textContent = conversation.kind === 'channel' ? 'Forum thread' : 'Group thread';
   if (!replies.length) dom.threadMessages.innerHTML = '<div class="thread-empty"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 4h16v12H8l-4 4V4Z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg><p>No replies yet. Start the thread below.</p></div>';
-  dom.threadMessages.scrollTop = dom.threadMessages.scrollHeight;
+  const wasAtBottom = dom.threadMessages.scrollTop >= dom.threadMessages.scrollHeight - dom.threadMessages.clientHeight - 20;
+  if (wasAtBottom || state.streamingReasoning?.conversationId === state.selected) {
+    dom.threadMessages.scrollTop = dom.threadMessages.scrollHeight;
+  }
 }
 
 async function sendThreadReply(event) {
   event.preventDefault();
+  if (state.sending) return;
   const body = dom.threadInput.value.trim();
-  if (!body || !state.selected || !state.threadRoot) return;
+  if ((!body && !state.threadPendingAttachments.length) || !state.selected || !state.threadRoot) return;
+  state.sending = true;
   try {
     const message = await request(`/api/conversations/${state.selected}/messages`, {
       method: 'POST',
-      body: JSON.stringify({ sender_id: state.currentUser.id, body, parent_message_id: state.threadRoot.id, attachments: [] })
+      body: JSON.stringify({ sender_id: state.currentUser.id, body, parent_message_id: state.threadRoot.id, attachments: state.threadPendingAttachments })
     });
     if (!state.messages.some((item) => item.id === message.id)) state.messages.push(message);
     dom.threadInput.value = '';
+    state.threadPendingAttachments = [];
     resizeTextArea(dom.threadInput);
     renderMessages();
     renderThread();
     refreshConversations();
   } catch (error) { setStatus(error.message, false); }
+  finally { state.sending = false; }
+}
+
+async function uploadThreadFiles(files) {
+  dom.threadAttachmentButton.disabled = true;
+  try {
+    for (const file of files) {
+      const form = new FormData(); form.append('file', file);
+      const attachment = await request('/api/uploads', { method: 'POST', body: form });
+      state.threadPendingAttachments.push(attachment);
+    }
+  } catch (error) { setStatus(error.message, false); }
+  finally { dom.threadAttachmentButton.disabled = false; dom.threadAttachmentInput.value = ''; }
 }
 
 async function sendMessage(event) {
   event.preventDefault();
+  if (state.sending) return;
   const body = dom.input.value.trim();
   if ((!body && !state.pendingAttachments.length) || !state.selected) return;
+  state.sending = true;
   try {
     const message = await request(`/api/conversations/${state.selected}/messages`, {
       method: 'POST',
@@ -1205,7 +1339,7 @@ async function sendMessage(event) {
     if (conversation?.kind === 'direct') {
       const peer = directPeerFor(conversation);
       if (peer?.kind === 'agent') {
-        state.agentThinking = { agentId: peer.id, name: peer.display_name };
+        state.agentThinking = { agentId: peer.id, name: peer.display_name, conversationId: state.selected };
       }
     }
     dom.input.value = '';
@@ -1219,6 +1353,7 @@ async function sendMessage(event) {
     renderReply();
     refreshConversations();
   } catch (error) { setStatus(error.message, false); }
+  finally { state.sending = false; }
 }
 
 async function uploadFiles(files) {
@@ -1248,7 +1383,8 @@ function renderMentionSuggestions() {
   if (!isSharedConversation()) { dom.mentionSuggestions.hidden = true; return; }
   const match = dom.input.value.slice(0, dom.input.selectionStart).match(/@([A-Za-z0-9_-]*)$/);
   if (!match) { dom.mentionSuggestions.hidden = true; return; }
-  const candidates = state.users.filter((user) => user.username.toLowerCase().startsWith(match[1].toLowerCase())).slice(0, 6);
+  const members = (state.conversationMembers[state.selected] || []).map((m) => m.principal);
+  const candidates = members.filter((user) => user.username.toLowerCase().startsWith(match[1].toLowerCase())).slice(0, 6);
   dom.mentionSuggestions.hidden = !candidates.length;
   dom.mentionSuggestions.innerHTML = candidates.map((user) => `<button type="button" data-username="${escapeHtml(user.username)}"><span>${escapeHtml(user.display_name)}</span><small>@${escapeHtml(user.username)} · ${escapeHtml(user.kind)}</small></button>`).join('');
   dom.mentionSuggestions.querySelectorAll('[data-username]').forEach((button) => button.addEventListener('click', () => { const end = dom.input.selectionStart; const start = end - match[0].length; dom.input.setRangeText(`@${button.dataset.username} `, start, end, 'end'); dom.mentionSuggestions.hidden = true; dom.input.focus(); }));
@@ -1346,8 +1482,8 @@ async function refreshNotifications() {
 }
 function renderNotifications() {
   const unread = state.notifications.filter((item) => !item.read).length; dom.notificationCount.hidden = !unread; dom.notificationCount.textContent = unread > 9 ? '9+' : unread;
-  dom.notificationList.innerHTML = state.notifications.map((item) => { const action = item.kind === 'mention' ? 'mentioned you' : item.kind === 'direct_message' ? 'sent you a message' : 'replied in a thread'; return `<button class="notification-item${item.read ? '' : ' unread'}" type="button" data-conversation="${escapeHtml(item.conversation_id)}"><strong>${escapeHtml(item.actor_name)} ${action}</strong><span>${escapeHtml(item.body)}</span><time>${new Intl.DateTimeFormat([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(item.created_at))}</time></button>`; }).join('') || '<div class="search-empty">You are all caught up.</div>';
-  dom.notificationList.querySelectorAll('[data-conversation]').forEach((button) => button.addEventListener('click', () => { selectConversation(button.dataset.conversation); dom.notificationsPanel.hidden = true; }));
+  dom.notificationList.innerHTML = state.notifications.map((item) => { const action = item.kind === 'mention' ? 'mentioned you' : item.kind === 'direct_message' ? 'sent you a message' : 'replied in a thread'; return `<button class="notification-item${item.read ? '' : ' unread'}" type="button" data-conversation="${escapeHtml(item.conversation_id)}" data-message-id="${escapeHtml(item.message_id)}"><strong>${escapeHtml(item.actor_name)} ${action}</strong><span>${escapeHtml(item.body)}</span><time>${new Intl.DateTimeFormat([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(item.created_at))}</time></button>`; }).join('') || '<div class="search-empty">You are all caught up.</div>';
+  dom.notificationList.querySelectorAll('[data-conversation]').forEach((button) => button.addEventListener('click', () => { selectConversation(button.dataset.conversation, button.dataset.messageId); dom.notificationsPanel.hidden = true; }));
 }
 
 async function refreshConversations() {
@@ -1394,7 +1530,9 @@ function connectSocket() {
     if (update.type === 'message_created') {
       refreshConversations();
       refreshNotifications();
-      if (update.data.sender?.kind === 'agent') { state.agentThinking = null; state.streamingReasoning = null; state._thinkingStart = null; }
+      if (update.data.sender?.kind === 'agent' && update.data.conversation_id === state.selected) {
+        if (state.agentThinking?.agentId === update.data.sender.id) state.agentThinking = null;
+      }
       if (update.data.conversation_id === state.selected && !state.messages.some((message) => message.id === update.data.id)) {
         state.messages.push(update.data);
         renderMessages();
@@ -1422,8 +1560,8 @@ function connectSocket() {
     } else if (update.type === 'reasoning_update') {
       if (update.data.conversation_id === state.selected) {
         state.agentThinking = null;
-        if (!state.streamingReasoning || state.streamingReasoning.agentId !== update.data.principal?.id) {
-          state.streamingReasoning = { agentId: update.data.principal?.id, name: update.data.principal?.display_name, content: '', parentMessageId: update.data.parent_message_id || null };
+        if (!state.streamingReasoning || state.streamingReasoning.agentId !== update.data.principal?.id || state.streamingReasoning.parentMessageId !== (update.data.parent_message_id || null)) {
+          state.streamingReasoning = { agentId: update.data.principal?.id, name: update.data.principal?.display_name, content: '', parentMessageId: update.data.parent_message_id || null, conversationId: state.selected, done: false };
           state._thinkingStart = Date.now();
         }
         if (state.streamingReasoning) {
@@ -1433,11 +1571,23 @@ function connectSocket() {
           renderMessages();
           if (state.threadRoot && state.streamingReasoning.parentMessageId === state.threadRoot.id) renderThread();
         }
-      }
-      if (update.data.done) {
-        const doneEl = document.querySelector('.thinking-done');
-        if (doneEl) doneEl.classList.add('thinking-fade-out');
-        setTimeout(() => { state.streamingReasoning = null; state._thinkingStart = null; renderMessages(); if (state.threadRoot) renderThread(); }, 800);
+        if (update.data.done) {
+          const reasoningRef = state.streamingReasoning;
+          const doneEl = dom.feed.querySelector('.thinking-done');
+          if (doneEl) doneEl.classList.add('thinking-fade-out');
+          const isError = update.data.content?.startsWith('Unable to reach');
+          if (isError) {
+            state.messages.push({ id: `error-${Date.now()}`, sender: update.data.principal, body: update.data.content, created_at: new Date().toISOString(), conversation_id: state.selected, is_system: true });
+            requestAnimationFrame(() => { dom.feed.scrollTop = dom.feed.scrollHeight; });
+          }
+          setTimeout(() => {
+            if (state.streamingReasoning === reasoningRef) {
+              state.streamingReasoning = null;
+              state._thinkingStart = null;
+              if (!isError) { renderMessages(); if (state.threadRoot) renderThread(); }
+            }
+          }, isError ? 0 : 800);
+        }
       }
     }
   };
@@ -1468,8 +1618,8 @@ async function performSearch() {
       const results = await request(`/api/search?${params}`);
       dom.searchResults.hidden = false;
       dom.searchSummary.textContent = `${results.length} result${results.length === 1 ? '' : 's'} for “${term}”`;
-      dom.searchResultList.innerHTML = results.slice(0, 8).map((message) => `<button class="search-result" type="button" data-conversation="${escapeHtml(message.conversation_id)}"><strong>${escapeHtml(message.sender.display_name)}</strong><span>${escapeHtml(message.body)}</span></button>`).join('') || '<div class="search-empty">No messages found.</div>';
-      dom.searchResultList.querySelectorAll('[data-conversation]').forEach((item) => item.addEventListener('click', () => { selectConversation(item.dataset.conversation); closeSearch(); }));
+      dom.searchResultList.innerHTML = results.slice(0, 8).map((message) => `<button class="search-result" type="button" data-conversation="${escapeHtml(message.conversation_id)}" data-message-id="${escapeHtml(message.id)}"><strong>${escapeHtml(message.sender.display_name)}</strong><span>${escapeHtml(message.body)}</span></button>`).join('') || '<div class="search-empty">No messages found.</div>';
+      dom.searchResultList.querySelectorAll('[data-conversation]').forEach((item) => item.addEventListener('click', () => { selectConversation(item.dataset.conversation, item.dataset.messageId); closeSearch(); }));
     } catch (_) {}
   }, 250);
 }
@@ -1535,6 +1685,8 @@ dom.input.addEventListener('input', () => {
   updateSendButton();
 });
 dom.threadInput.addEventListener('input', () => resizeTextArea(dom.threadInput));
+dom.threadAttachmentButton.addEventListener('click', () => dom.threadAttachmentInput.click());
+dom.threadAttachmentInput.addEventListener('change', () => uploadThreadFiles([...dom.threadAttachmentInput.files]));
 dom.input.addEventListener('keydown', (event) => {
   if (event.key !== 'Enter' || event.isComposing) return;
   if (state.richMode) {
@@ -1556,6 +1708,7 @@ dom.bulletList.addEventListener('click', () => insertListMarker('• '));
 dom.numberList.addEventListener('click', () => insertListMarker('1. '));
 dom.settingsUnlockForm.addEventListener('submit', unlockSettings);
 dom.settingsForm.addEventListener('submit', saveSettings);
+dom.settingsForm.addEventListener('input', updateSettingsSaveState);
 dom.settingsLock.addEventListener('click', lockSettings);
 dom.loginForm.addEventListener('submit', (event) => submitAuth(event, '/api/auth/login'));
 dom.setupForm.addEventListener('submit', (event) => submitAuth(event, '/api/auth/setup'));
