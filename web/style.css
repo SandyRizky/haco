@@ -748,7 +748,171 @@ select:focus-visible, summary:focus-visible, [tabindex]:focus-visible {
 .message-body {
   margin: 0; color: var(--text);
   font-size: 13px; line-height: 1.55;
-  overflow-wrap: anywhere; white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.message-body.plain-text-body {
+  white-space: pre-wrap;
+}
+
+.message-body.markdown-body {
+  display: flow-root;
+  white-space: normal;
+}
+
+/* ── Markdown typography (scoped to agent messages) ────────── */
+.markdown-body > :first-child { margin-top: 0; }
+.markdown-body > :last-child { margin-bottom: 0; }
+
+.markdown-body p {
+  margin: 0 0 0.75em;
+}
+
+.markdown-body h1 { font-size: 1.28em; margin: 0.8em 0 0.4em; line-height: 1.25; }
+.markdown-body h2 { font-size: 1.18em; margin: 0.75em 0 0.35em; line-height: 1.25; }
+.markdown-body h3 { font-size: 1.10em; margin: 0.7em 0 0.3em; line-height: 1.25; }
+.markdown-body h4,
+.markdown-body h5,
+.markdown-body h6 { font-size: 1em; margin: 0.65em 0 0.25em; line-height: 1.25; }
+
+.markdown-body ul,
+.markdown-body ol {
+  margin: 0.55em 0 0.75em;
+  padding-left: 1.45em;
+}
+
+.markdown-body li + li { margin-top: 0.28em; }
+
+.markdown-body blockquote {
+  margin: 0.75em 0;
+  padding: 0.55em 0.75em;
+  border-left: 3px solid var(--violet);
+  border-radius: 0 8px 8px 0;
+  color: var(--text-secondary);
+  background: var(--violet-soft);
+}
+
+.markdown-body hr {
+  margin: 0.85em 0;
+  border: 0;
+  border-top: 1px solid var(--border-glass);
+}
+
+.markdown-body a {
+  color: var(--cyan);
+  text-decoration: underline;
+  word-break: break-all;
+}
+
+.markdown-body a:hover { color: var(--indigo); }
+
+.markdown-body strong { font-weight: 700; }
+.markdown-body em { font-style: italic; }
+.markdown-body del { text-decoration: line-through; opacity: 0.7; }
+
+.markdown-body .inline-code,
+.markdown-body code:not(pre code) {
+  padding: 0 5px;
+  border: 1px solid var(--border-glass);
+  border-radius: 5px;
+  color: var(--violet);
+  background: rgba(181, 154, 255, 0.08);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.markdown-code-shell {
+  margin: 6px 0;
+  border: 1px solid var(--border-glass);
+  border-radius: 10px;
+  background: rgba(5, 11, 31, 0.5);
+  overflow: hidden;
+}
+
+.markdown-code-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 28px;
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--border-glass);
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.markdown-copy-button {
+  padding: 2px 8px;
+  border: 1px solid var(--border-glass);
+  border-radius: 5px;
+  color: var(--text-secondary);
+  background: transparent;
+  font-size: 9px;
+  cursor: pointer;
+  transition: border-color var(--duration-fast), background var(--duration-fast);
+}
+
+.markdown-copy-button:hover {
+  border-color: var(--border-strong);
+  background: var(--glass-hover);
+}
+
+.markdown-code-shell pre {
+  margin: 0;
+  padding: 10px;
+  overflow-x: auto;
+  font-size: 11px;
+  line-height: 1.5;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.markdown-code-shell pre code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: pre;
+}
+
+.markdown-table-scroll {
+  margin: 0.75em 0;
+  max-width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.markdown-table-scroll:focus-visible {
+  outline: 2px solid var(--cyan);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+.markdown-body table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.markdown-body th,
+.markdown-body td {
+  padding: 6px 10px;
+  border: 1px solid var(--border-glass);
+  text-align: left;
+  vertical-align: top;
+}
+
+.markdown-body th {
+  color: var(--text);
+  background: var(--glass-utility);
+  font-weight: 700;
+}
+
+.markdown-body tr:nth-child(even) td {
+  background: rgba(255, 255, 255, 0.03);
 }
 
 /* Message Footer */
@@ -2475,12 +2639,22 @@ body {
 .message-meta { padding: 0 2px 3px; }.message-meta strong { color: var(--text); }
 .principal-kind { display: none !important; }
 .reply-button { color: var(--indigo); }.message:hover .reply-button, .reply-button:focus-visible { opacity: 1; }.own .reply-button { opacity: 1; }
-.message-body { color: var(--text); font-size: 13px; line-height: 1.58; overflow-wrap: anywhere; white-space: pre-wrap; }
+.message-body { color: var(--text); font-size: 13px; line-height: 1.58; overflow-wrap: anywhere; }
+.message-body.plain-text-body { white-space: pre-wrap; }
+.message-body.markdown-body { display: flow-root; white-space: normal; }
 .message-body .message-link { color: var(--cyan); text-decoration: underline; word-break: break-all; }
 .message-body .message-link:hover { color: var(--indigo); }
 .message-body .code-block { margin: 6px 0; padding: 10px; border: 1px solid var(--border-glass); border-radius: 10px; background: rgba(5, 11, 31, 0.5); overflow-x: auto; font-size: 11px; line-height: 1.5; }
 .message-body .code-block code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre; }
 .message-body .inline-code { padding: 0 5px; border: 1px solid var(--border-glass); border-radius: 5px; color: var(--violet); background: rgba(181, 154, 255, 0.08); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; word-break: break-all; }
+
+.markdown-code-shell { border-color: var(--border-glass); background: rgba(236, 242, 255, 0.35); }
+.markdown-code-header { border-bottom-color: var(--border-glass); color: var(--text-muted); }
+.markdown-body .inline-code,
+.markdown-body code:not(pre code) { border-color: var(--border-glass); color: var(--violet); background: rgba(181, 154, 255, 0.06); }
+.markdown-body blockquote { border-left-color: var(--violet); color: var(--text-secondary); background: var(--violet-soft); }
+.markdown-body tr:nth-child(even) td { background: rgba(237, 242, 255, 0.22); }
+.markdown-table-scroll { border-radius: 8px; }
 .message-footer { padding-top: 5px; }.message-footer time, .edited-label { color: var(--text-muted); }
 .message:hover .more-actions-button, .more-actions-button:focus-visible { opacity: 1; }
 .thread-button { margin-left: 4px; border-color: rgba(99, 117, 239, 0.27); color: var(--indigo); background: rgba(255,255,255,0.22); }

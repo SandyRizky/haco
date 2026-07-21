@@ -52,7 +52,7 @@ const formatMessageDate = (createdAt) => {
   if (isYesterday) return 'Yesterday';
   return new Intl.DateTimeFormat([], { weekday: 'long', month: 'short', day: 'numeric' }).format(msgDate);
 };
-const renderMessageBody = (text) => {
+const renderPlainTextBody = (text) => {
   if (!text) return '';
   const html = text.split(/(```[\s\S]*?```|`[^`]+`)/g).map((part) => {
     if (!part) return '';
@@ -68,6 +68,60 @@ const renderMessageBody = (text) => {
   }).join('');
   return html.replace(/\n/g, '<br>');
 };
+
+function messageRenderFingerprint(message) {
+  return JSON.stringify({
+    body: message.body,
+    editedAt: message.edited_at,
+    deleted: message.is_deleted,
+    pinned: message.is_pinned,
+    saved: message.is_saved,
+    reactions: message.reactions,
+    reasoning: message.reasoning?.content || null,
+    activity: message.activity?.summary || null
+  });
+}
+
+function renderMessageBodyInto(element, message) {
+  const useMarkdown =
+    message?.sender?.kind === 'agent' &&
+    !message?.is_deleted;
+
+  element.classList.toggle('markdown-body', useMarkdown);
+  element.classList.toggle('plain-text-body', !useMarkdown);
+
+  if (!useMarkdown) {
+    element.innerHTML = renderPlainTextBody(message?.body || '');
+    return;
+  }
+
+  try {
+    window.HacoMarkdown.renderInto(element, message.body || '');
+  } catch (error) {
+    console.error('Unable to render agent Markdown', {
+      messageId: message?.id,
+      error
+    });
+
+    element.classList.remove('markdown-body');
+    element.classList.add('plain-text-body');
+    element.innerHTML = renderPlainTextBody(message?.body || '');
+  }
+}
+
+function messagePreviewText(message, maxLength = 180) {
+  const raw = message?.body || '';
+
+  const text = message?.sender?.kind === 'agent'
+    ? window.HacoMarkdown.previewText(raw)
+    : raw;
+
+  const normalized = text.replace(/\s+/g, ' ').trim();
+
+  return normalized.length > maxLength
+    ? `${normalized.slice(0, maxLength - 1)}\u2026`
+    : normalized;
+}
 const currentConversation = () => state.conversations.find((conversation) => conversation.id === state.selected);
 const isSharedConversation = (conversation = currentConversation()) => ['channel', 'group'].includes(conversation?.kind);
 const isOnline = (principal) => ['online', 'working'].includes(principal?.presence);
@@ -925,6 +979,13 @@ function renderMessages() {
 
   visibleMessages.forEach((message, index) => {
     let node = existingNodes.get(message.id);
+    const fingerprint = messageRenderFingerprint(message);
+
+    if (node && node.dataset.renderFingerprint !== fingerprint) {
+      node.remove();
+      node = null;
+    }
+
     if (node) {
       existingNodes.delete(message.id);
       const currentIndex = [...dom.feed.children].indexOf(node);
@@ -1009,8 +1070,8 @@ function createMessageFallbackNode(message) {
   name.textContent = sender.display_name || 'Unknown sender';
   const bubble = document.createElement('div');
   bubble.className = 'message-bubble';
-  const body = document.createElement('p');
-  body.className = 'message-body';
+  const body = document.createElement('div');
+  body.className = 'message-body plain-text-body';
   body.textContent = message?.body || 'This message could not be displayed.';
   meta.append(name);
   bubble.append(body);
@@ -1026,7 +1087,7 @@ function appendQuotedReply(article, message) {
   const quote = document.createElement('button');
   quote.type = 'button';
   quote.className = 'quoted-message';
-  quote.innerHTML = `<span class="quoted-message-avatar">${escapeHtml(initialsFor(source.sender.display_name))}</span><span><small>Replying to ${escapeHtml(source.sender.display_name)}</small><strong>${escapeHtml(source.body)}</strong></span><span class="quoted-message-jump" aria-hidden="true">↗</span>`;
+  quote.innerHTML = `<span class="quoted-message-avatar">${escapeHtml(initialsFor(source.sender.display_name))}</span><span><small>Replying to ${escapeHtml(source.sender.display_name)}</small><strong>${escapeHtml(messagePreviewText(source))}</strong></span><span class="quoted-message-jump" aria-hidden="true">↗</span>`;
   quote.addEventListener('click', () => document.querySelector(`[data-message-id="${CSS.escape(source.id)}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }));
   article.querySelector('.message-bubble').prepend(quote);
 }
@@ -1035,6 +1096,7 @@ function createMessageNode(message, options = {}) {
   const fragment = document.querySelector('#message-template').content.cloneNode(true);
   const article = fragment.querySelector('article');
   article.dataset.messageId = message.id;
+  article.dataset.renderFingerprint = messageRenderFingerprint(message);
   article.classList.toggle('agent', message.sender.kind === 'agent');
   article.classList.toggle('own', message.sender.id === state.currentUser?.id);
   article.classList.toggle('thread-context', Boolean(options.thread));
@@ -1043,7 +1105,7 @@ function createMessageNode(message, options = {}) {
   applyPresence(article.querySelector('.presence-bar'), message.sender);
   article.querySelector('.message-meta strong').textContent = message.sender.display_name;
   article.querySelector('time').textContent = new Intl.DateTimeFormat([], { hour: '2-digit', minute: '2-digit' }).format(new Date(message.created_at));
-  article.querySelector('.message-body').innerHTML = renderMessageBody(message.body);
+  renderMessageBodyInto(article.querySelector('.message-body'), message);
   article.classList.toggle('deleted', Boolean(message.is_deleted));
   article.querySelector('.edited-label').hidden = !message.edited_at;
   if (message.activity || message.reasoning) {
@@ -1482,7 +1544,7 @@ async function refreshNotifications() {
 }
 function renderNotifications() {
   const unread = state.notifications.filter((item) => !item.read).length; dom.notificationCount.hidden = !unread; dom.notificationCount.textContent = unread > 9 ? '9+' : unread;
-  dom.notificationList.innerHTML = state.notifications.map((item) => { const action = item.kind === 'mention' ? 'mentioned you' : item.kind === 'direct_message' ? 'sent you a message' : 'replied in a thread'; return `<button class="notification-item${item.read ? '' : ' unread'}" type="button" data-conversation="${escapeHtml(item.conversation_id)}" data-message-id="${escapeHtml(item.message_id)}"><strong>${escapeHtml(item.actor_name)} ${action}</strong><span>${escapeHtml(item.body)}</span><time>${new Intl.DateTimeFormat([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(item.created_at))}</time></button>`; }).join('') || '<div class="search-empty">You are all caught up.</div>';
+  dom.notificationList.innerHTML = state.notifications.map((item) => { const action = item.kind === 'mention' ? 'mentioned you' : item.kind === 'direct_message' ? 'sent you a message' : 'replied in a thread'; return `<button class="notification-item${item.read ? '' : ' unread'}" type="button" data-conversation="${escapeHtml(item.conversation_id)}" data-message-id="${escapeHtml(item.message_id)}"><strong>${escapeHtml(item.actor_name)} ${action}</strong><span>${escapeHtml(messagePreviewText(item))}</span><time>${new Intl.DateTimeFormat([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(item.created_at))}</time></button>`; }).join('') || '<div class="search-empty">You are all caught up.</div>';
   dom.notificationList.querySelectorAll('[data-conversation]').forEach((button) => button.addEventListener('click', () => { selectConversation(button.dataset.conversation, button.dataset.messageId); dom.notificationsPanel.hidden = true; }));
 }
 
@@ -1618,7 +1680,7 @@ async function performSearch() {
       const results = await request(`/api/search?${params}`);
       dom.searchResults.hidden = false;
       dom.searchSummary.textContent = `${results.length} result${results.length === 1 ? '' : 's'} for “${term}”`;
-      dom.searchResultList.innerHTML = results.slice(0, 8).map((message) => `<button class="search-result" type="button" data-conversation="${escapeHtml(message.conversation_id)}" data-message-id="${escapeHtml(message.id)}"><strong>${escapeHtml(message.sender.display_name)}</strong><span>${escapeHtml(message.body)}</span></button>`).join('') || '<div class="search-empty">No messages found.</div>';
+      dom.searchResultList.innerHTML = results.slice(0, 8).map((message) => `<button class="search-result" type="button" data-conversation="${escapeHtml(message.conversation_id)}" data-message-id="${escapeHtml(message.id)}"><strong>${escapeHtml(message.sender.display_name)}</strong><span>${escapeHtml(messagePreviewText(message))}</span></button>`).join('') || '<div class="search-empty">No messages found.</div>';
       dom.searchResultList.querySelectorAll('[data-conversation]').forEach((item) => item.addEventListener('click', () => { selectConversation(item.dataset.conversation, item.dataset.messageId); closeSearch(); }));
     } catch (_) {}
   }, 250);

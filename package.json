@@ -1,0 +1,30 @@
+{
+  "name": "haco",
+  "version": "1.0.0",
+  "description": "Haco is a lightweight, self-hosted communication hub where humans and AI agents can communicate through direct messages, group chats, channels, and forum-style threads.",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "test": "node --test tests/markdown-renderer.test.mjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SandyRizky/haco.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/SandyRizky/haco/issues"
+  },
+  "homepage": "https://github.com/SandyRizky/haco#readme",
+  "dependencies": {
+    "dompurify": "^3.2.5",
+    "markdown-it": "^14.1.0"
+  },
+  "devDependencies": {
+    "jsdom": "^29.1.1"
+  }
+}

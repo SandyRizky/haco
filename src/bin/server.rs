@@ -8455,4 +8455,48 @@ mod tests {
         assert!(OPENCLAW_CONNECTOR_MODULE.contains("Buffer.from(encoded, \"hex\")"));
         assert!(OPENCLAW_CONNECTOR_MODULE.contains("Haco reply skipped:"));
     }
+
+    #[test]
+    fn embedded_markdown_assets_are_present() {
+        assert!(
+            WebAssets::get("vendor/markdown-it.min.js").is_some(),
+            "vendor/markdown-it.min.js must be embedded"
+        );
+        assert!(
+            WebAssets::get("vendor/dompurify.min.js").is_some(),
+            "vendor/dompurify.min.js must be embedded"
+        );
+        assert!(
+            WebAssets::get("markdown.js").is_some(),
+            "markdown.js must be embedded"
+        );
+    }
+
+    #[test]
+    fn index_html_loads_dependencies_before_app() {
+        let index = WebAssets::get("index.html").expect("index.html must be embedded");
+        let content = String::from_utf8_lossy(index.data.as_ref());
+
+        let md_pos = content.find("vendor/markdown-it.min.js").unwrap_or(usize::MAX);
+        let dp_pos = content.find("vendor/dompurify.min.js").unwrap_or(usize::MAX);
+        let mk_pos = content.find("/markdown.js\"").unwrap_or(usize::MAX);
+        let app_pos = content.find("/app.js").unwrap_or(usize::MAX);
+
+        assert!(
+            md_pos < dp_pos,
+            "markdown-it must load before dompurify"
+        );
+        assert!(
+            dp_pos < mk_pos,
+            "dompurify must load before markdown.js"
+        );
+        assert!(
+            mk_pos < app_pos,
+            "markdown.js must load before app.js"
+        );
+        assert!(
+            app_pos != usize::MAX,
+            "app.js script tag must exist"
+        );
+    }
 }
