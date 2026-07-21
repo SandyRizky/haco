@@ -849,7 +849,9 @@ function renderMessages() {
   if (dom.composer) dom.composer.hidden = false;
   const scrollWasAtBottom = dom.feed.scrollTop >= dom.feed.scrollHeight - dom.feed.clientHeight - 20;
   dom.feed.innerHTML = '';
-  const visibleMessages = isSharedConversation()
+  const sharedConversation = isSharedConversation();
+  dom.feed.classList.toggle('forum-post-feed', sharedConversation);
+  const visibleMessages = sharedConversation
     ? state.messages.filter((message) => !message.parent_message_id)
     : state.messages;
   visibleMessages.forEach((message) => {
@@ -860,26 +862,8 @@ function renderMessages() {
       dom.feed.append(createMessageFallbackNode(message));
     }
   });
-  if (state.agentThinking && !state.streamingReasoning && !isSharedConversation()) {
-    const typing = document.createElement('article');
-    typing.className = 'message agent thinking-fade-in';
-    const avatar = initialsFor(state.agentThinking.name);
-    typing.innerHTML = `<span class="avatar-stack message-avatar-stack"><span class="avatar">${escapeHtml(avatar)}</span><span class="presence-bar agent online"></span></span><div class="message-content"><div class="message-meta"><strong>${escapeHtml(state.agentThinking.name)}</strong></div><div class="message-bubble thinking-typing-bubble"><p class="message-body"><span class="thinking-spinner"></span> Typing…</p></div></div>`;
-    dom.feed.append(typing);
-  }
-  if (state.streamingReasoning && !isSharedConversation() && state.streamingReasoning.agentId) {
-    const elapsed = state.streamingReasoning.done ? Math.round((Date.now() - (state._thinkingStart || Date.now())) / 1000) : Math.round((Date.now() - (state._thinkingStart || Date.now())) / 1000);
-    const thinking = document.createElement('article');
-    thinking.className = `message agent thinking-fade-in${state.streamingReasoning.done ? ' thinking-done' : ''}`;
-    const avatar = initialsFor(state.streamingReasoning.name);
-    const content = escapeHtml(state.streamingReasoning.content || '');
-    const spinnerHtml = state.streamingReasoning.done ? '' : '<span class="thinking-spinner"></span>';
-    const label = state.streamingReasoning.done
-      ? `Worked${elapsed > 60 ? ` for ${Math.floor(elapsed / 60)}m` : ''}`
-      : `Thinking${elapsed > 3 ? ` for ${elapsed}s` : ''}…`;
-    thinking.innerHTML = `<span class="avatar-stack message-avatar-stack"><span class="avatar">${escapeHtml(avatar)}</span><span class="presence-bar agent online"></span></span><div class="message-content"><div class="message-meta"><strong>${escapeHtml(state.streamingReasoning.name)}</strong></div><div class="message-bubble"><p class="message-body">${content ? `<details class="reasoning-trace" open><summary>${spinnerHtml}<span class="thinking-label">${escapeHtml(label)}</span></summary><pre class="thinking-content">${content}</pre></details>` : `${spinnerHtml} ${escapeHtml(label)}`}</p></div></div>`;
-    dom.feed.append(thinking);
-  }
+  if (!sharedConversation && state.agentThinking && !state.streamingReasoning) dom.feed.append(createLiveThinkingNode(state.agentThinking));
+  if (!sharedConversation && state.streamingReasoning?.agentId) dom.feed.append(createLiveThinkingNode(state.streamingReasoning));
   if (!visibleMessages.length && !state.streamingReasoning && !state.agentThinking) dom.feed.innerHTML = '<div class="empty-feed"><svg width="36" height="36" viewBox="0 0 36 36" fill="none" aria-hidden="true"><circle cx="18" cy="13" r="5" stroke="currentColor" stroke-width="1.5"/><path d="M4 32c0-5.5 4-10 14-10s14 4.5 14 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M18 1v4M18 22v4M6 6l3 3M27 9l-3 3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" opacity="0.4"/></svg><strong>No messages yet</strong><p>Start the conversation with a person or agent.</p></div>';
   dom.loadOlder.hidden = !state.hasOlder;
   const latestMessage = visibleMessages[visibleMessages.length - 1];
@@ -898,6 +882,20 @@ function renderMessages() {
     requestAnimationFrame(() => { dom.feed.scrollTop = dom.feed.scrollHeight; });
   }
   state.loadingOlder = false;
+}
+
+function createLiveThinkingNode(thinking, options = {}) {
+  const elapsed = Math.max(0, Math.round((Date.now() - (state._thinkingStart || Date.now())) / 1000));
+  const article = document.createElement('article');
+  article.className = `message agent thinking-fade-in${thinking.done ? ' thinking-done' : ''}${options.thread ? ' thread-context' : ''}`;
+  const avatar = initialsFor(thinking.name || 'Agent');
+  const label = thinking.done
+    ? `Worked${elapsed > 60 ? ` for ${Math.floor(elapsed / 60)}m` : ''}`
+    : `Thinking${elapsed > 3 ? ` for ${elapsed}s` : ''}…`;
+  const content = thinking.content || 'Preparing a response…';
+  const spinnerHtml = thinking.done ? '' : '<span class="thinking-spinner"></span>';
+  article.innerHTML = `<span class="avatar-stack message-avatar-stack"><span class="avatar">${escapeHtml(avatar)}</span><span class="presence-bar agent online"></span></span><div class="message-content"><div class="message-meta"><strong>${escapeHtml(thinking.name || 'Agent')}</strong></div><div class="message-bubble thinking-live-bubble"><details class="reasoning-trace"><summary>${spinnerHtml}<span class="thinking-label">${escapeHtml(label)}</span><span class="thinking-disclosure" aria-hidden="true">⌄</span></summary><pre class="thinking-content">${escapeHtml(content)}</pre></details></div></div>`;
+  return article;
 }
 
 function createMessageFallbackNode(message) {
@@ -941,6 +939,7 @@ function createMessageNode(message, options = {}) {
   article.classList.toggle('agent', message.sender.kind === 'agent');
   article.classList.toggle('own', message.sender.id === state.currentUser?.id);
   article.classList.toggle('thread-context', Boolean(options.thread));
+  article.classList.toggle('forum-post', isSharedConversation() && !options.thread);
   article.querySelector('.avatar').textContent = initialsFor(message.sender.display_name);
   applyPresence(article.querySelector('.presence-bar'), message.sender);
   article.querySelector('.message-meta strong').textContent = message.sender.display_name;
@@ -1165,6 +1164,9 @@ function renderThread() {
   dom.threadMessages.innerHTML = '';
   dom.threadRoot.append(createMessageNode(state.threadRoot, { thread: true }));
   replies.forEach((reply) => dom.threadMessages.append(createMessageNode(reply, { thread: true })));
+  if (state.streamingReasoning?.parentMessageId === state.threadRoot.id) {
+    dom.threadMessages.append(createLiveThinkingNode(state.streamingReasoning, { thread: true }));
+  }
   dom.threadCount.textContent = `${replies.length} ${replies.length === 1 ? 'reply' : 'replies'}`;
   document.querySelector('.thread-header .eyebrow').textContent = conversation.kind === 'channel' ? 'Forum thread' : 'Group thread';
   if (!replies.length) dom.threadMessages.innerHTML = '<div class="thread-empty"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 4h16v12H8l-4 4V4Z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg><p>No replies yet. Start the thread below.</p></div>';
@@ -1418,25 +1420,24 @@ function connectSocket() {
       renderConversations();
       if (!dom.membersPopover.hidden && state.conversationMembers[state.selected]) renderMembersPopover(state.conversationMembers[state.selected]);
     } else if (update.type === 'reasoning_update') {
-      if (state.messages.some((m) => m.sender?.id === update.data.principal?.id && m.conversation_id === update.data.conversation_id)) {
-        state.agentThinking = null; state.streamingReasoning = null; state._thinkingStart = null; renderMessages(); return;
-      }
       if (update.data.conversation_id === state.selected) {
         state.agentThinking = null;
         if (!state.streamingReasoning || state.streamingReasoning.agentId !== update.data.principal?.id) {
-          state.streamingReasoning = { agentId: update.data.principal?.id, name: update.data.principal?.display_name, content: '' };
+          state.streamingReasoning = { agentId: update.data.principal?.id, name: update.data.principal?.display_name, content: '', parentMessageId: update.data.parent_message_id || null };
           state._thinkingStart = Date.now();
         }
         if (state.streamingReasoning) {
           if (update.data.done) state.streamingReasoning.done = true;
-          if (update.data.content) state.streamingReasoning.content += update.data.content;
+          if (update.data.parent_message_id) state.streamingReasoning.parentMessageId = update.data.parent_message_id;
+          if (update.data.content) state.streamingReasoning.content = update.data.content;
           renderMessages();
+          if (state.threadRoot && state.streamingReasoning.parentMessageId === state.threadRoot.id) renderThread();
         }
       }
       if (update.data.done) {
         const doneEl = document.querySelector('.thinking-done');
         if (doneEl) doneEl.classList.add('thinking-fade-out');
-        setTimeout(() => { state.streamingReasoning = null; state._thinkingStart = null; renderMessages(); }, 800);
+        setTimeout(() => { state.streamingReasoning = null; state._thinkingStart = null; renderMessages(); if (state.threadRoot) renderThread(); }, 800);
       }
     }
   };

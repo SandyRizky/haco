@@ -21,6 +21,29 @@ const reasoningFromMessage = (message) => {
   return null;
 };
 
+const messagesFromRun = (event, context) => [
+  event?.messages,
+  context?.messages,
+  event?.context?.messages,
+  context?.result?.messages,
+  event?.result?.messages
+].flatMap((messages) => Array.isArray(messages) ? messages : []);
+
+const finalAssistantMessage = (event, context, messages) => {
+  const explicitFinals = [
+    event?.finalMessage,
+    event?.assistantMessage,
+    event?.result?.finalMessage,
+    event?.result?.assistantMessage,
+    context?.finalMessage,
+    context?.assistantMessage,
+    context?.result?.finalMessage,
+    context?.result?.assistantMessage
+  ].filter(Boolean);
+  return [...messages].reverse().find((message) => message?.role === "assistant")
+    ?? [...explicitFinals].reverse().find((message) => textFromMessage(message));
+};
+
 const mediaTypeFromUrl = (url) => {
   const path = String(url).split(/[?#]/, 1)[0].toLowerCase();
   if (/\.(png|jpe?g|gif|webp|avif|svg)$/.test(path)) return "image/" + (path.endsWith(".svg") ? "svg+xml" : path.match(/\.([a-z0-9]+)$/)?.[1]?.replace("jpg", "jpeg"));
@@ -148,13 +171,14 @@ export default {
     // by run/session ID when the final assistant answer is available.
     const routes = new Map();
     const routeKeys = (event, context) => [
-      context?.runId, event?.runId, context?.sessionId, event?.sessionId
+      context?.runId, event?.runId, event?.context?.runId,
+      context?.sessionId, event?.sessionId, event?.context?.sessionId
     ].filter((value) => typeof value === "string" && value.length > 0);
     const sessionRoute = (event, context) => decodeRoute(
-      context?.sessionKey ?? event?.sessionKey ?? event?.context?.sessionKey
+      context?.sessionKey ?? context?.session?.key ?? event?.sessionKey ?? event?.session?.key ?? event?.context?.sessionKey
     );
     const rememberRoute = (event, context) => {
-      const route = sessionRoute(event, context) ?? routeFromMessages(event?.messages);
+      const route = sessionRoute(event, context) ?? routeFromMessages(messagesFromRun(event, context));
       if (route?.conversation_id) {
         for (const key of routeKeys(event, context)) routes.set(key, route);
       }
@@ -179,7 +203,7 @@ export default {
         api.logger?.warn?.("Haco reply skipped: the agent run has no Haco session route.");
         return;
       }
-      const agentId = context?.agentId ?? event?.context?.agentId ?? event?.agentId;
+      const agentId = context?.agentId ?? context?.agent?.id ?? event?.context?.agentId ?? event?.agentId ?? event?.agent?.id;
       const principalId = config.principalMap?.[agentId];
       if (!config.hacoUrl || !config.token || !config.principalMap) {
         forgetRoute(event, context);
@@ -191,8 +215,8 @@ export default {
         api.logger?.warn?.("Haco reply skipped: OpenClaw agent is not mapped (" + String(agentId ?? "unknown") + ").");
         return;
       }
-      const messages = Array.isArray(event?.messages) ? event.messages : [];
-      const final = [...messages].reverse().find((message) => message?.role === "assistant");
+      const messages = messagesFromRun(event, context);
+      const final = finalAssistantMessage(event, context, messages);
       const body = textFromMessage(final);
       const reasoning = reasoningFromMessage(final);
       const attachments = await attachmentsFromMessage(final, config.hacoUrl, config.token, principalId);
@@ -205,6 +229,7 @@ export default {
         await postThinking(config.hacoUrl, config.token, {
           conversation_id: route.conversation_id,
           agent_id: principalId,
+          parent_message_id: route.parent_message_id ?? null,
           content: reasoning,
           done: true
         });

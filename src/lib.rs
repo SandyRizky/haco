@@ -166,6 +166,8 @@ pub enum RealtimeEvent {
     ReasoningUpdate {
         conversation_id: String,
         principal: Principal,
+        #[serde(default)]
+        parent_message_id: Option<String>,
         content: String,
         done: bool,
     },

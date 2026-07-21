@@ -2618,6 +2618,109 @@ body {
   border-color: rgba(236, 169, 89, 0.42);
 }
 
+/* Forums are a collection of posts, not a chat transcript. Root posts stay on
+   the left and open their replies in the dedicated thread inspector. */
+.message-feed.forum-post-feed {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  max-width: 920px;
+  padding-top: 44px;
+}
+
+.forum-post-feed .forum-post {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr);
+  align-items: start;
+  gap: 11px;
+  width: 100%;
+  margin: 0;
+  padding: 13px;
+  border: 1px solid var(--border-glass);
+  border-left: 3px solid rgba(108, 126, 239, 0.65);
+  border-radius: 17px;
+  background: rgba(255, 255, 255, 0.16);
+  box-shadow: var(--inset-highlight);
+}
+
+.forum-post-feed .forum-post.own {
+  grid-template-columns: 36px minmax(0, 1fr);
+}
+
+.forum-post-feed .forum-post.own .avatar-stack {
+  display: inline-grid;
+}
+
+.forum-post-feed .forum-post.own .message-content {
+  grid-column: auto;
+}
+
+.forum-post-feed .forum-post .message-bubble,
+.forum-post-feed .forum-post.own .message-bubble {
+  max-width: none;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.forum-post-feed .forum-post.agent {
+  border-left-color: rgba(35, 207, 225, 0.78);
+}
+
+.forum-post-feed .forum-post .message-meta {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 0 6px;
+}
+
+.forum-post-feed .forum-post .message-meta::after {
+  content: "Post";
+  padding: 2px 5px;
+  border: 1px solid rgba(104, 122, 228, 0.24);
+  border-radius: 999px;
+  color: var(--text-muted);
+  font-size: 8px;
+  font-weight: 780;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.forum-post-feed .forum-post .message-footer {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.forum-post-feed .forum-post .thread-button {
+  margin-left: 0;
+}
+
+.thinking-live-bubble {
+  border-color: rgba(57, 207, 229, 0.32) !important;
+}
+
+.thinking-live-bubble .reasoning-trace {
+  margin: 0;
+}
+
+@media (max-width: 760px) {
+  .message-feed.forum-post-feed {
+    gap: 8px;
+    padding-top: 38px;
+  }
+
+  .forum-post-feed .forum-post,
+  .forum-post-feed .forum-post.own {
+    grid-template-columns: 32px minmax(0, 1fr);
+    gap: 8px;
+    padding: 10px;
+    border-radius: 14px;
+  }
+}
+
 @media (max-width: 760px) {
   .composer-shell {
     padding-bottom: max(10px, env(safe-area-inset-bottom));

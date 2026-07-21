@@ -614,6 +614,8 @@ struct OpenClawWizardTestRequest {
 struct OpenClawThinkingRequest {
     conversation_id: String,
     agent_id: String,
+    #[serde(default)]
+    parent_message_id: Option<String>,
     content: String,
     #[serde(default)]
     done: bool,
@@ -622,6 +624,7 @@ struct OpenClawThinkingRequest {
 #[derive(Clone)]
 struct OpenClawDispatchTarget {
     openclaw_agent_id: String,
+    principal_id: String,
     gateway_url: String,
     hook_token: String,
 }
@@ -3263,6 +3266,29 @@ const reasoningFromMessage = (message) => {
   return null;
 };
 
+const messagesFromRun = (event, context) => [
+  event?.messages,
+  context?.messages,
+  event?.context?.messages,
+  context?.result?.messages,
+  event?.result?.messages
+].flatMap((messages) => Array.isArray(messages) ? messages : []);
+
+const finalAssistantMessage = (event, context, messages) => {
+  const explicitFinals = [
+    event?.finalMessage,
+    event?.assistantMessage,
+    event?.result?.finalMessage,
+    event?.result?.assistantMessage,
+    context?.finalMessage,
+    context?.assistantMessage,
+    context?.result?.finalMessage,
+    context?.result?.assistantMessage
+  ].filter(Boolean);
+  return [...messages].reverse().find((message) => message?.role === "assistant")
+    ?? [...explicitFinals].reverse().find((message) => textFromMessage(message));
+};
+
 const mediaTypeFromUrl = (url) => {
   const path = String(url).split(/[?#]/, 1)[0].toLowerCase();
   if (/\.(png|jpe?g|gif|webp|avif|svg)$/.test(path)) return "image/" + (path.endsWith(".svg") ? "svg+xml" : path.match(/\.([a-z0-9]+)$/)?.[1]?.replace("jpg", "jpeg"));
@@ -3390,13 +3416,14 @@ export default {
     // by run/session ID when the final assistant answer is available.
     const routes = new Map();
     const routeKeys = (event, context) => [
-      context?.runId, event?.runId, context?.sessionId, event?.sessionId
+      context?.runId, event?.runId, event?.context?.runId,
+      context?.sessionId, event?.sessionId, event?.context?.sessionId
     ].filter((value) => typeof value === "string" && value.length > 0);
     const sessionRoute = (event, context) => decodeRoute(
-      context?.sessionKey ?? event?.sessionKey ?? event?.context?.sessionKey
+      context?.sessionKey ?? context?.session?.key ?? event?.sessionKey ?? event?.session?.key ?? event?.context?.sessionKey
     );
     const rememberRoute = (event, context) => {
-      const route = sessionRoute(event, context) ?? routeFromMessages(event?.messages);
+      const route = sessionRoute(event, context) ?? routeFromMessages(messagesFromRun(event, context));
       if (route?.conversation_id) {
         for (const key of routeKeys(event, context)) routes.set(key, route);
       }
@@ -3421,7 +3448,7 @@ export default {
         api.logger?.warn?.("Haco reply skipped: the agent run has no Haco session route.");
         return;
       }
-      const agentId = context?.agentId ?? event?.context?.agentId ?? event?.agentId;
+      const agentId = context?.agentId ?? context?.agent?.id ?? event?.context?.agentId ?? event?.agentId ?? event?.agent?.id;
       const principalId = config.principalMap?.[agentId];
       if (!config.hacoUrl || !config.token || !config.principalMap) {
         forgetRoute(event, context);
@@ -3433,8 +3460,8 @@ export default {
         api.logger?.warn?.("Haco reply skipped: OpenClaw agent is not mapped (" + String(agentId ?? "unknown") + ").");
         return;
       }
-      const messages = Array.isArray(event?.messages) ? event.messages : [];
-      const final = [...messages].reverse().find((message) => message?.role === "assistant");
+      const messages = messagesFromRun(event, context);
+      const final = finalAssistantMessage(event, context, messages);
       const body = textFromMessage(final);
       const reasoning = reasoningFromMessage(final);
       const attachments = await attachmentsFromMessage(final, config.hacoUrl, config.token, principalId);
@@ -3447,6 +3474,7 @@ export default {
         await postThinking(config.hacoUrl, config.token, {
           conversation_id: route.conversation_id,
           agent_id: principalId,
+          parent_message_id: route.parent_message_id ?? null,
           content: reasoning,
           done: true
         });
@@ -3571,6 +3599,20 @@ async fn dispatch_haco_message_to_openclaw(
         .and_then(|store| store.admin_settings().ok())
         .map(|settings| local_haco_url(&settings))
         .unwrap_or_else(|| "http://127.0.0.1:8787".to_owned());
+    if let Some(principal) = state
+        .store
+        .lock()
+        .ok()
+        .and_then(|store| store.principal(&target.principal_id).ok())
+    {
+        let _ = state.events.send(RealtimeEvent::ReasoningUpdate {
+            conversation_id: message.conversation_id.clone(),
+            principal,
+            parent_message_id: parent_message_id.clone(),
+            content: "Preparing a response…".to_owned(),
+            done: false,
+        });
+    }
     let expires = (Utc::now() + chrono::Duration::hours(1)).timestamp();
     let attachment_context = message.attachments.iter().map(|attachment| {
         let url = if attachment.url.starts_with("/api/attachments/") {
@@ -3606,6 +3648,22 @@ async fn dispatch_haco_message_to_openclaw(
         "timeoutSeconds": 600
     });
     let result = post_openclaw_hook(&state, &target, payload).await;
+    if result.is_err() {
+        if let Some(principal) = state
+            .store
+            .lock()
+            .ok()
+            .and_then(|store| store.principal(&target.principal_id).ok())
+        {
+            let _ = state.events.send(RealtimeEvent::ReasoningUpdate {
+                conversation_id: message.conversation_id.clone(),
+                principal,
+                parent_message_id,
+                content: "Unable to reach this agent right now.".to_owned(),
+                done: true,
+            });
+        }
+    }
     if let Ok(mut store) = state.store.lock() {
         let _ = store.set_openclaw_delivery_error(
             &target.openclaw_agent_id,
@@ -3807,6 +3865,7 @@ async fn openclaw_thinking(
     let _ = state.events.send(RealtimeEvent::ReasoningUpdate {
         conversation_id: request.conversation_id,
         principal,
+        parent_message_id: request.parent_message_id,
         content: request.content,
         done: request.done,
     });
@@ -5235,7 +5294,7 @@ impl Store {
         let (target, conversation_id) = self
             .connection
             .query_row(
-                "SELECT c.openclaw_agent_id, config.gateway_url, config.hook_token,
+                "SELECT c.openclaw_agent_id, c.principal_id, config.gateway_url, config.hook_token,
                         (SELECT conversation_id FROM openclaw_connection_conversations WHERE openclaw_agent_id = c.openclaw_agent_id ORDER BY conversation_id LIMIT 1)
                  FROM openclaw_connections c JOIN openclaw_connector_config config ON config.id = 1
                  WHERE c.openclaw_agent_id = ?1 AND c.enabled = 1",
@@ -5243,10 +5302,11 @@ impl Store {
                 |row| {
                     let target = OpenClawDispatchTarget {
                         openclaw_agent_id: row.get(0)?,
-                        gateway_url: row.get(1)?,
-                        hook_token: row.get(2)?,
+                        principal_id: row.get(1)?,
+                        gateway_url: row.get(2)?,
+                        hook_token: row.get(3)?,
                     };
-                    let conversation_id: Option<String> = row.get(3)?;
+                    let conversation_id: Option<String> = row.get(4)?;
                     Ok((target, conversation_id))
                 },
             )
@@ -5410,7 +5470,7 @@ impl Store {
         let mut statement = self
             .connection
             .prepare(
-                "SELECT c.openclaw_agent_id, c.response_mode, p.username, c.display_name, conversation.kind, p.id
+                "SELECT c.openclaw_agent_id, c.principal_id, c.response_mode, p.username, c.display_name, conversation.kind
              FROM openclaw_connections c
              JOIN principals p ON p.id = c.principal_id
              JOIN openclaw_connection_conversations cc ON cc.openclaw_agent_id = c.openclaw_agent_id
@@ -5434,11 +5494,11 @@ impl Store {
         for row in rows {
             let (
                 openclaw_agent_id,
+                principal_id,
                 response_mode,
                 username,
                 display_name,
                 conversation_kind,
-                principal_id,
             ) = row.map_err(ApiError::from)?;
             if exclude_principal_id == Some(principal_id.as_str()) {
                 continue;
@@ -5451,6 +5511,7 @@ impl Store {
             if conversation_kind == "direct" || response_mode == "always" || mentioned {
                 targets.push(OpenClawDispatchTarget {
                     openclaw_agent_id,
+                    principal_id,
                     gateway_url: gateway_url.clone(),
                     hook_token: hook_token.clone(),
                 });
@@ -7905,7 +7966,8 @@ mod tests {
                 username: "test_agent".into(),
                 email: None,
                 access_role: "agent".into(),
-            })
+                password: None,
+            }, None)
             .unwrap();
         let conversation = store
             .create_conversation(
@@ -8383,6 +8445,10 @@ mod tests {
         assert!(OPENCLAW_CONNECTOR_MODULE.contains("api.on(\"agent_end\""));
         assert!(OPENCLAW_CONNECTOR_MODULE.contains("const routes = new Map();"));
         assert!(OPENCLAW_CONNECTOR_MODULE.contains("const routeFromMessages = (messages) =>"));
+        assert!(OPENCLAW_CONNECTOR_MODULE.contains("const messagesFromRun = (event, context) =>"));
+        assert!(OPENCLAW_CONNECTOR_MODULE.contains("const finalAssistantMessage = (event, context, messages) =>"));
+        assert!(OPENCLAW_CONNECTOR_MODULE.contains("context?.agent?.id"));
+        assert!(OPENCLAW_CONNECTOR_MODULE.contains("parent_message_id: route.parent_message_id ?? null"));
         assert!(OPENCLAW_CONNECTOR_MODULE.contains("haco-route:([0-9a-f]+)"));
         assert!(OPENCLAW_CONNECTOR_MODULE.contains("Buffer.from(encoded, \"hex\")"));
         assert!(OPENCLAW_CONNECTOR_MODULE.contains("Haco reply skipped:"));
