@@ -8,15 +8,13 @@
     'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
     'hr',
     'table', 'thead', 'tbody', 'tr', 'th', 'td',
-    'a',
-    'div', 'span', 'button'
+    'a'
   ];
 
   const ALLOWED_ATTR = [
     'href', 'target', 'rel',
     'class', 'data-language',
-    'aria-label', 'tabindex',
-    'type'
+    'aria-label'
   ];
 
   const SAFE_PROTOCOLS = new Set(['https:', 'http:', 'mailto:']);
@@ -31,6 +29,16 @@
         breaks: true,
         typographer: false
       });
+
+      parseInstance.renderer.rules.image = (tokens, index) => {
+        const token = tokens[index];
+        const alt = (token.content || '').trim() || 'Image';
+        const href = token.attrGet('src') || '';
+
+        return href
+          ? `<a href="${parseInstance.utils.escapeHtml(href)}">Image: ${parseInstance.utils.escapeHtml(alt)}</a>`
+          : `<span>Image: ${parseInstance.utils.escapeHtml(alt)}</span>`;
+      };
     }
     return parseInstance;
   }
@@ -105,19 +113,31 @@
       copyButton.setAttribute('aria-label', label);
       copyButton.textContent = 'Copy';
 
-      copyButton.addEventListener('click', () => {
+      copyButton.addEventListener('click', async () => {
         const text = code?.textContent || '';
-        navigator.clipboard.writeText(text).then(() => {
+
+        try {
+          if (navigator.clipboard?.writeText && window.isSecureContext) {
+            await navigator.clipboard.writeText(text);
+          } else {
+            const ta = document.createElement('textarea');
+            ta.value = text;
+            ta.style.position = 'fixed';
+            ta.style.opacity = '0';
+            document.body.appendChild(ta);
+            ta.select();
+            document.execCommand('copy');
+            document.body.removeChild(ta);
+          }
+
           copyButton.textContent = 'Copied';
-          window.setTimeout(() => {
-            copyButton.textContent = 'Copy';
-          }, 2000);
-        }).catch(() => {
+        } catch (_) {
           copyButton.textContent = 'Copy failed';
-          window.setTimeout(() => {
-            copyButton.textContent = 'Copy';
-          }, 2000);
-        });
+        }
+
+        window.setTimeout(() => {
+          copyButton.textContent = 'Copy';
+        }, 2000);
       });
 
       header.append(langLabel, copyButton);
@@ -173,6 +193,18 @@
     container.append(fragment);
   }
 
+  function extractPreviewText(container) {
+    const blockSelector = 'h1,h2,h3,h4,h5,h6,p,li,blockquote,pre,tr';
+    const blocks = container.querySelectorAll(blockSelector);
+
+    if (!blocks.length) return container.textContent || '';
+
+    return [...blocks]
+      .map((node) => node.textContent?.trim())
+      .filter(Boolean)
+      .join(' ');
+  }
+
   function previewText(source) {
     if (!source || typeof source !== 'string') return '';
 
@@ -181,7 +213,7 @@
     container.innerHTML = html;
     hardenLinks(container);
 
-    return container.textContent || '';
+    return extractPreviewText(container);
   }
 
   window.HacoMarkdown = { renderInto, previewText };

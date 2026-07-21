@@ -209,6 +209,24 @@ describe('HacoMarkdown.renderInto', () => {
     win.HacoMarkdown.renderInto(el, '<strong>should be text</strong>');
     assert.ok(!el.querySelector('strong'));
   });
+
+  it('converts markdown images to safe text links', () => {
+    const win = setupMarkdown();
+    const el = win.document.createElement('div');
+    win.HacoMarkdown.renderInto(el, '![Architecture](https://example.com/diagram.png)');
+    assert.ok(!el.querySelector('img'), 'no img element');
+    const a = el.querySelector('a');
+    assert.ok(a, 'image becomes a link');
+    assert.match(a.textContent || '', /Architecture/);
+  });
+
+  it('preserves image alt text when image link is removed', () => {
+    const win = setupMarkdown();
+    const el = win.document.createElement('div');
+    win.HacoMarkdown.renderInto(el, '![alt text](javascript:alert(1))');
+    assert.match(el.textContent || '', /alt text/, 'alt text preserved');
+    assert.ok(!el.querySelector('img'), 'no img element');
+  });
 });
 
 // ── Security tests ───────────────────────────────────────────
@@ -314,6 +332,15 @@ describe('HacoMarkdown security', () => {
     win.HacoMarkdown.renderInto(el, malicious);
     assert.ok(!el.querySelector('img'), 'markdown image should not render as img');
   });
+
+  it('strips interactive tags from rendered output', () => {
+    const win = setupMarkdown();
+    const el = win.document.createElement('div');
+    win.HacoMarkdown.renderInto(el, '<div>test</div><span>inline</span><button>click</button>');
+    assert.ok(!el.querySelector('div'), 'div stripped');
+    assert.ok(!el.querySelector('span'), 'span stripped');
+    assert.ok(!el.querySelector('button'), 'button stripped');
+  });
 });
 
 // ── previewText tests ────────────────────────────────────────
@@ -340,5 +367,43 @@ describe('HacoMarkdown.previewText', () => {
     assert.equal(win.HacoMarkdown.previewText(''), '');
     assert.equal(win.HacoMarkdown.previewText(null), '');
     assert.equal(win.HacoMarkdown.previewText(undefined), '');
+  });
+
+  it('separates block elements with spaces', () => {
+    const win = setupMarkdown();
+    const text = win.HacoMarkdown.previewText('# Deploy\n- Build\n- Test\n- Release');
+    assert.ok(text.includes(' ') || text.includes('Deploy Build') || text.includes('Build Test') || text.includes('Test Release'),
+      'block elements should have separators');
+  });
+
+  it('preserves heading text in preview', () => {
+    const win = setupMarkdown();
+    const text = win.HacoMarkdown.previewText('## Investigation complete');
+    assert.match(text, /Investigation complete/);
+    assert.ok(!text.includes('##'), 'heading markers stripped');
+  });
+
+  it('handles blockquotes in preview', () => {
+    const win = setupMarkdown();
+    const text = win.HacoMarkdown.previewText('> important note');
+    assert.match(text, /important note/);
+    assert.ok(!text.includes('>'), 'blockquote marker stripped');
+  });
+
+  it('handles code blocks in preview', () => {
+    const win = setupMarkdown();
+    const text = win.HacoMarkdown.previewText('```\nconst x = 1;\n```');
+    assert.match(text, /const x = 1/);
+    assert.ok(!text.includes('```'), 'fence stripped');
+  });
+
+  it('handles tables in preview', () => {
+    const win = setupMarkdown();
+    const text = win.HacoMarkdown.previewText('| Name | Status |\n| --- | --- |\n| API | Ready |');
+    assert.match(text, /Name/);
+    assert.match(text, /Status/);
+    assert.match(text, /API/);
+    assert.match(text, /Ready/);
+    assert.ok(!text.includes('|'), 'table pipes stripped');
   });
 });

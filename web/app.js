@@ -70,6 +70,14 @@ const renderPlainTextBody = (text) => {
 };
 
 function messageRenderFingerprint(message) {
+  const source = message.parent_message_id
+    ? state.messages.find((item) => item.id === message.parent_message_id)
+    : null;
+
+  const replyCount = state.messages.filter(
+    (item) => item.parent_message_id === message.id
+  ).length;
+
   return JSON.stringify({
     body: message.body,
     editedAt: message.edited_at,
@@ -78,7 +86,13 @@ function messageRenderFingerprint(message) {
     saved: message.is_saved,
     reactions: message.reactions,
     reasoning: message.reasoning?.content || null,
-    activity: message.activity?.summary || null
+    activity: message.activity?.summary || null,
+    attachments: (message.attachments || []).map((a) => a.url),
+    urlPreview: message.url_preview?.url || null,
+    replyCount,
+    quotedSourceBody: source?.body || null,
+    quotedSourceEditedAt: source?.edited_at || null,
+    quotedSourceDeleted: source?.is_deleted || false
   });
 }
 
@@ -111,11 +125,7 @@ function renderMessageBodyInto(element, message) {
 
 function messagePreviewText(message, maxLength = 180) {
   const raw = message?.body || '';
-
-  const text = message?.sender?.kind === 'agent'
-    ? window.HacoMarkdown.previewText(raw)
-    : raw;
-
+  const text = window.HacoMarkdown.previewText(raw);
   const normalized = text.replace(/\s+/g, ' ').trim();
 
   return normalized.length > maxLength
