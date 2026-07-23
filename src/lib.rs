@@ -56,9 +56,14 @@ pub struct ConversationMember {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentActivity {
     pub status: String,
-    /// A deliberately short, user-visible explanation—not hidden model reasoning.
     pub summary: String,
     pub tool_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<DateTime<Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<DateTime<Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -85,6 +90,45 @@ pub struct ReasoningTrace {
     pub content: String,
     pub created_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
+}
+
+/// A durable record of one agent invocation: Haco dispatch through final completion.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentRun {
+    pub id: String,
+    pub delivery_id: String,
+    pub conversation_id: String,
+    pub parent_message_id: Option<String>,
+    pub agent_principal: Principal,
+    pub openclaw_agent_id: String,
+    pub status: String,
+    pub activity_summary: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
+    pub reasoning_sequence: i64,
+    pub error: Option<String>,
+    pub started_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub completed_at: Option<DateTime<Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub final_message_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunUpdateRequest {
+    #[serde(default)]
+    pub status: Option<String>,
+    pub activity_summary: Option<String>,
+    pub reasoning_content: Option<String>,
+    #[serde(default)]
+    pub content_mode: String,
+    #[serde(default)]
+    pub sequence: i64,
+    #[serde(default)]
+    pub done: bool,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -121,6 +165,8 @@ pub struct BootstrapResponse {
     pub current_user: Principal,
     pub conversations: Vec<Conversation>,
     pub initial_messages: Vec<ChatMessage>,
+    #[serde(default)]
+    pub active_runs: Vec<AgentRun>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -145,13 +191,10 @@ pub struct OpenClawEvent {
     pub attachments: Vec<Attachment>,
     #[serde(default)]
     pub reasoning: Option<String>,
-    /// Stable identifier supplied by an integration so retries are idempotent.
     #[serde(default)]
     pub delivery_id: Option<String>,
-    /// Correlates the admin connection test with the actual agent callback.
     #[serde(default)]
     pub test_id: Option<String>,
-    /// Prevents an agent-to-agent DM from recursively bouncing forever.
     #[serde(default)]
     pub relay_depth: u8,
 }
@@ -165,14 +208,7 @@ pub enum RealtimeEvent {
         message_id: String,
         conversation_id: String,
     },
-    ReasoningUpdate {
-        conversation_id: String,
-        principal: Principal,
-        #[serde(default)]
-        parent_message_id: Option<String>,
-        content: String,
-        done: bool,
-    },
+    AgentRunUpdated(AgentRun),
     Typing {
         conversation_id: String,
         principal: Principal,

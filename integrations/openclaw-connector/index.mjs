@@ -1,6 +1,3 @@
-import { readFile } from "node:fs/promises";
-import { basename } from "node:path";
-
 const textFromMessage = (message) => {
   if (!message) return "";
   if (typeof message.content === "string") return message.content.trim();
@@ -58,9 +55,9 @@ const mediaTypeFromUrl = (url) => {
   return "application/octet-stream";
 };
 
-const postThinking = async (hacoUrl, token, payload) => {
+const postRunUpdate = async (hacoUrl, token, runId, payload) => {
   try {
-    await fetch(String(hacoUrl).replace(/\/$/, "") + "/api/integrations/openclaw/thinking", {
+    await fetch(String(hacoUrl).replace(/\/$/, "") + "/api/integrations/openclaw/runs/" + runId, {
       method: "POST",
       headers: { "authorization": "Bearer " + token, "content-type": "application/json" },
       body: JSON.stringify(payload)
@@ -76,28 +73,11 @@ const attachmentsFromMessage = async (message, hacoUrl, token, principalId) => {
     const value = part?.url ?? part?.mediaUrl ?? part?.path ?? part?.filePath ?? part?.source?.url;
     if (typeof value === "string") candidates.push(value);
   }
-  for (const match of textFromMessage(message).matchAll(/(?:MEDIA|FILE):\s*(\S+)/gi)) {
-    candidates.push(match[1].replace(/^['"]|['"]$/g, ""));
-  }
-  const attachments = [...new Set(candidates.filter((value) => /^https?:\/\//i.test(value)))].map((url, index) => {
+  return [...new Set(candidates.filter((value) => /^https?:\/\//i.test(value)))].map((url, index) => {
     let fileName = "agent-attachment-" + (index + 1);
     try { fileName = decodeURIComponent(new URL(url).pathname.split("/").pop()) || fileName; } catch {}
     return { id: crypto.randomUUID(), file_name: fileName, media_type: mediaTypeFromUrl(url), byte_size: 0, url };
   });
-  for (const value of [...new Set(candidates.filter((item) => typeof item === "string" && (/^file:\/\//i.test(item) || item.startsWith("/"))))]) {
-    try {
-      const path = value.startsWith("file://") ? decodeURIComponent(new URL(value).pathname) : value;
-      const bytes = await readFile(path);
-      const form = new FormData();
-      form.append("agent_id", principalId);
-      form.append("file", new Blob([bytes]), basename(path));
-      const response = await fetch(String(hacoUrl).replace(/\/$/, "") + "/api/integrations/openclaw/uploads", {
-        method: "POST", headers: { "authorization": "Bearer " + token }, body: form
-      });
-      if (response.ok) attachments.push(await response.json());
-    } catch {}
-  }
-  return attachments;
 };
 
 const deliverWithRetry = async (endpoint, token, payload) => {
@@ -140,8 +120,6 @@ const decodeRoute = (sessionKey) => {
     if (/^[0-9a-f]+$/i.test(encoded) && encoded.length % 2 === 0) {
       return JSON.parse(Buffer.from(encoded, "hex").toString("utf8"));
     }
-    // Accept an older route only when its original mixed case survives, so an
-    // in-flight request from a pre-hex Haco server can still complete.
     const base64 = encoded.replace(/-/g, "+").replace(/_/g, "/");
     const padded = base64 + "=".repeat((4 - base64.length % 4) % 4);
     return JSON.parse(Buffer.from(padded, "base64").toString("utf8"));
@@ -150,25 +128,11 @@ const decodeRoute = (sessionKey) => {
   }
 };
 
-const routeFromMessages = (messages) => {
-  let discovered = null;
-  for (const message of Array.isArray(messages) ? messages : []) {
-    for (const match of textFromMessage(message).matchAll(/\[\[haco-route:([0-9a-f]+)\]\]/gi)) {
-      const route = decodeRoute("hook:haco:" + match[1]);
-      if (route?.conversation_id) discovered = route;
-    }
-  }
-  return discovered;
-};
-
 export default {
   id: "haco-connector",
   name: "Haco Connector",
   description: "Routes OpenClaw results back to Haco.",
   register(api) {
-    // OpenClaw's hook-agent completion event can omit its session key. Capture
-    // the trusted Haco route at the start of the same run, then resolve it again
-    // by run/session ID when the final assistant answer is available.
     const routes = new Map();
     const routeKeys = (event, context) => [
       context?.runId, event?.runId, event?.context?.runId,
@@ -178,7 +142,7 @@ export default {
       context?.sessionKey ?? context?.session?.key ?? event?.sessionKey ?? event?.session?.key ?? event?.context?.sessionKey
     );
     const rememberRoute = (event, context) => {
-      const route = sessionRoute(event, context) ?? routeFromMessages(messagesFromRun(event, context));
+      const route = sessionRoute(event, context);
       if (route?.conversation_id) {
         for (const key of routeKeys(event, context)) routes.set(key, route);
       }
@@ -193,50 +157,67 @@ export default {
     }, { timeoutMs: 30000 });
 
     api.on("agent_end", async (event, context) => {
-      // OpenClaw resolves plugin configuration per hook invocation. The API-level
-      // fallback supports older runtimes while the hook context is authoritative.
       const config = context?.pluginConfig ?? event?.context?.pluginConfig ?? api.pluginConfig ?? {};
       const route = rememberRoute(event, context)
         ?? routeKeys(event, context).map((key) => routes.get(key)).find(Boolean);
+      const agentId = context?.agentId ?? context?.agent?.id ?? event?.context?.agentId ?? event?.agentId ?? event?.agent?.id;
+      const principalId = config.principalMap?.[agentId];
+      const runId = route?.run_id;
+      const hasConfig = config.hacoUrl && config.token && config.principalMap;
+
       if (!route?.conversation_id) {
         forgetRoute(event, context);
         api.logger?.warn?.("Haco reply skipped: the agent run has no Haco session route.");
         return;
       }
-      const agentId = context?.agentId ?? context?.agent?.id ?? event?.context?.agentId ?? event?.agentId ?? event?.agent?.id;
-      const principalId = config.principalMap?.[agentId];
-      if (!config.hacoUrl || !config.token || !config.principalMap) {
+
+      let terminalStatus = event?.success === false ? "failed" : "completed";
+      let terminalError = null;
+
+      if (!hasConfig || !principalId) {
+        if (runId && hasConfig) {
+          await postRunUpdate(config.hacoUrl, config.token, runId, {
+            status: "delivery_failed",
+            error: principalId ? "connector configuration is incomplete" : "OpenClaw agent is not mapped (" + String(agentId ?? "unknown") + ")",
+            done: true
+          });
+        }
         forgetRoute(event, context);
-        api.logger?.warn?.("Haco reply skipped: connector configuration is incomplete.");
+        if (!hasConfig) api.logger?.warn?.("Haco reply skipped: connector configuration is incomplete.");
+        else api.logger?.warn?.("Haco reply skipped: OpenClaw agent is not mapped (" + String(agentId ?? "unknown") + ").");
         return;
       }
-      if (!principalId) {
-        forgetRoute(event, context);
-        api.logger?.warn?.("Haco reply skipped: OpenClaw agent is not mapped (" + String(agentId ?? "unknown") + ").");
-        return;
-      }
+
       const messages = messagesFromRun(event, context);
       const final = finalAssistantMessage(event, context, messages);
       const body = textFromMessage(final);
       const reasoning = reasoningFromMessage(final);
       const attachments = await attachmentsFromMessage(final, config.hacoUrl, config.token, principalId);
+
       if (!body && !attachments.length) {
+        if (runId) {
+          await postRunUpdate(config.hacoUrl, config.token, runId, {
+            status: "failed",
+            error: "the completed agent run has no assistant text",
+            done: true
+          });
+        }
         forgetRoute(event, context);
         api.logger?.warn?.("Haco reply skipped: the completed agent run has no assistant text.");
         return;
       }
-      if (reasoning) {
-        await postThinking(config.hacoUrl, config.token, {
-          conversation_id: route.conversation_id,
-          agent_id: principalId,
-          parent_message_id: route.parent_message_id ?? null,
-          content: reasoning,
-          done: true
-        });
-      }
+
       const endpoint = String(config.hacoUrl).replace(/\/$/, "") + "/api/integrations/openclaw/events";
       try {
-        const runId = context?.runId ?? event?.context?.runId ?? event?.runId ?? crypto.randomUUID();
+        if (reasoning && runId) {
+          await postRunUpdate(config.hacoUrl, config.token, runId, {
+            reasoning_content: reasoning,
+            content_mode: "snapshot",
+            sequence: 1,
+            done: false
+          });
+        }
+        const fallbackRunId = context?.runId ?? event?.context?.runId ?? event?.runId ?? crypto.randomUUID();
         await deliverWithRetry(endpoint, config.token, {
             agent_id: principalId,
             conversation_id: route.conversation_id,
@@ -249,14 +230,27 @@ export default {
               tool_name: "openclaw.agent"
             },
             attachments,
-            delivery_id: route.delivery_id ? String(route.delivery_id) + ":" + String(agentId) : String(runId) + ":" + String(agentId),
+            delivery_id: route.delivery_id ? String(route.delivery_id) + ":" + String(agentId) : String(fallbackRunId) + ":" + String(agentId),
             test_id: route.test_id ?? null,
             relay_depth: Number(route.relay_depth || 0) + 1
         });
         api.logger?.info?.("Haco reply delivered for OpenClaw agent " + String(agentId));
+        terminalStatus = event?.success === false ? "failed" : "completed";
       } catch (error) {
-        api.logger?.warn?.("Haco delivery failed: " + (error instanceof Error ? error.message : String(error)));
+        terminalStatus = "delivery_failed";
+        terminalError = error instanceof Error ? error.message : String(error);
+        api.logger?.warn?.("Haco delivery failed: " + terminalError);
       } finally {
+        if (runId && hasConfig) {
+          await postRunUpdate(config.hacoUrl, config.token, runId, {
+            status: terminalError ? terminalStatus : null,
+            error: terminalError,
+            reasoning_content: terminalError ? null : reasoning,
+            content_mode: reasoning ? "snapshot" : "snapshot",
+            sequence: reasoning ? 2 : 1,
+            done: true
+          });
+        }
         forgetRoute(event, context);
       }
     }, { timeoutMs: 30000 });

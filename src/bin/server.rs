@@ -28,9 +28,10 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use futures_util::StreamExt;
 use haco::{
-    AdminSettings, AdminSettingsUpdate, AgentActivity, Attachment, BootstrapResponse, ChatMessage,
-    Conversation, ConversationKind, ConversationMember, CreateMessageRequest, OpenClawEvent,
-    Principal, PrincipalKind, ReactionSummary, RealtimeEvent, ReasoningTrace, UrlPreview,
+    AdminSettings, AdminSettingsUpdate, AgentActivity, AgentRun, Attachment, BootstrapResponse,
+    ChatMessage, Conversation, ConversationKind, ConversationMember, CreateMessageRequest,
+    OpenClawEvent, Principal, PrincipalKind, ReactionSummary, RealtimeEvent, ReasoningTrace,
+    RunUpdateRequest, UrlPreview,
 };
 use hmac::{Hmac, Mac};
 use rand::{rngs::OsRng, RngCore};
@@ -267,6 +268,10 @@ fn hex_sha256(data: &[u8]) -> String {
 }
 fn hex_bytes(data: &[u8]) -> String {
     data.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn conversation_supports_threads(kind: &str) -> bool {
+    matches!(kind, "channel" | "group")
 }
 
 fn decode_hex(value: &str) -> Option<Vec<u8>> {
@@ -610,17 +615,6 @@ struct OpenClawWizardTestRequest {
     openclaw_agent_id: String,
 }
 
-#[derive(Deserialize)]
-struct OpenClawThinkingRequest {
-    conversation_id: String,
-    agent_id: String,
-    #[serde(default)]
-    parent_message_id: Option<String>,
-    content: String,
-    #[serde(default)]
-    done: bool,
-}
-
 #[derive(Clone)]
 struct OpenClawDispatchTarget {
     openclaw_agent_id: String,
@@ -727,6 +721,7 @@ async fn main() -> anyhow::Result<()> {
             "/api/conversations/:conversation_id/messages",
             get(messages).post(create_message),
         )
+        .route("/api/conversations/:conversation_id/agent-runs", get(conversation_agent_runs))
         .route("/api/search", get(search))
         .route(
             "/api/uploads",
@@ -822,7 +817,7 @@ async fn main() -> anyhow::Result<()> {
             post(delete_conversation),
         )
         .route("/api/integrations/openclaw/events", post(openclaw_event))
-        .route("/api/integrations/openclaw/thinking", post(openclaw_thinking))
+        .route("/api/integrations/openclaw/runs/:run_id", post(openclaw_run_update))
         .route(
             "/api/integrations/openclaw/uploads",
             post(upload_openclaw_attachment).layer(DefaultBodyLimit::max(1_073_741_824)),
@@ -1627,10 +1622,16 @@ async fn bootstrap(
         .map(|conversation| store.messages_page(&conversation.id, None, 50, &current_user.id))
         .transpose()?
         .unwrap_or_default();
+    let active_runs = conversations
+        .first()
+        .map(|conversation| store.active_agent_runs_for_conversation(&conversation.id))
+        .transpose()?
+        .unwrap_or_default();
     Ok(Json(BootstrapResponse {
         current_user,
         conversations,
         initial_messages,
+        active_runs,
     }))
 }
 
@@ -2526,7 +2527,7 @@ async fn test_openclaw_connection(
         store.begin_openclaw_test(&request.openclaw_agent_id, &test_id)?;
     }
     let session_key =
-        openclaw_session_key_for(&conversation_id, None, Some(&test_id), Some(&test_id), 0);
+        openclaw_session_key_for(&conversation_id, None, Some(&test_id), Some(&test_id), 0, None);
     let route_marker = session_key.trim_start_matches("hook:haco:");
     let test_message = serde_json::json!({
         "message": format!("Haco connection test. Reply with exactly: Haco connection successful.\n\n[[haco-route:{route_marker}]]\nInternal routing metadata. Do not mention or repeat it."),
@@ -2733,7 +2734,7 @@ fn local_haco_url(settings: &AdminSettings) -> String {
 
 #[cfg(test)]
 fn openclaw_session_key(conversation_id: &str, parent_message_id: Option<&str>) -> String {
-    openclaw_session_key_for(conversation_id, parent_message_id, None, None, 0)
+    openclaw_session_key_for(conversation_id, parent_message_id, None, None, 0, None)
 }
 
 fn openclaw_session_key_for(
@@ -2742,13 +2743,15 @@ fn openclaw_session_key_for(
     test_id: Option<&str>,
     delivery_id: Option<&str>,
     relay_depth: u8,
+    run_id: Option<&str>,
 ) -> String {
     let metadata = serde_json::json!({
         "conversation_id": conversation_id,
         "parent_message_id": parent_message_id,
         "test_id": test_id,
         "delivery_id": delivery_id,
-        "relay_depth": relay_depth
+        "relay_depth": relay_depth,
+        "run_id": run_id
     });
     // OpenClaw normalizes webhook session keys to lowercase. Hex preserves the
     // opaque route metadata under that normalization; Base64URL does not.
@@ -3243,8 +3246,6 @@ const OPENCLAW_CONNECTOR_MANIFEST: &str = r#"{
 }"#;
 
 const OPENCLAW_CONNECTOR_MODULE: &str = r#"
-import { readFile } from "node:fs/promises";
-import { basename } from "node:path";
 
 const textFromMessage = (message) => {
   if (!message) return "";
@@ -3303,9 +3304,9 @@ const mediaTypeFromUrl = (url) => {
   return "application/octet-stream";
 };
 
-const postThinking = async (hacoUrl, token, payload) => {
+const postRunUpdate = async (hacoUrl, token, runId, payload) => {
   try {
-    await fetch(String(hacoUrl).replace(/\/$/, "") + "/api/integrations/openclaw/thinking", {
+    await fetch(String(hacoUrl).replace(/\/$/, "") + "/api/integrations/openclaw/runs/" + runId, {
       method: "POST",
       headers: { "authorization": "Bearer " + token, "content-type": "application/json" },
       body: JSON.stringify(payload)
@@ -3321,28 +3322,11 @@ const attachmentsFromMessage = async (message, hacoUrl, token, principalId) => {
     const value = part?.url ?? part?.mediaUrl ?? part?.path ?? part?.filePath ?? part?.source?.url;
     if (typeof value === "string") candidates.push(value);
   }
-  for (const match of textFromMessage(message).matchAll(/(?:MEDIA|FILE):\s*(\S+)/gi)) {
-    candidates.push(match[1].replace(/^['"]|['"]$/g, ""));
-  }
-  const attachments = [...new Set(candidates.filter((value) => /^https?:\/\//i.test(value)))].map((url, index) => {
+  return [...new Set(candidates.filter((value) => /^https?:\/\//i.test(value)))].map((url, index) => {
     let fileName = "agent-attachment-" + (index + 1);
     try { fileName = decodeURIComponent(new URL(url).pathname.split("/").pop()) || fileName; } catch {}
     return { id: crypto.randomUUID(), file_name: fileName, media_type: mediaTypeFromUrl(url), byte_size: 0, url };
   });
-  for (const value of [...new Set(candidates.filter((item) => typeof item === "string" && (/^file:\/\//i.test(item) || item.startsWith("/"))))]) {
-    try {
-      const path = value.startsWith("file://") ? decodeURIComponent(new URL(value).pathname) : value;
-      const bytes = await readFile(path);
-      const form = new FormData();
-      form.append("agent_id", principalId);
-      form.append("file", new Blob([bytes]), basename(path));
-      const response = await fetch(String(hacoUrl).replace(/\/$/, "") + "/api/integrations/openclaw/uploads", {
-        method: "POST", headers: { "authorization": "Bearer " + token }, body: form
-      });
-      if (response.ok) attachments.push(await response.json());
-    } catch {}
-  }
-  return attachments;
 };
 
 const deliverWithRetry = async (endpoint, token, payload) => {
@@ -3385,8 +3369,6 @@ const decodeRoute = (sessionKey) => {
     if (/^[0-9a-f]+$/i.test(encoded) && encoded.length % 2 === 0) {
       return JSON.parse(Buffer.from(encoded, "hex").toString("utf8"));
     }
-    // Accept an older route only when its original mixed case survives, so an
-    // in-flight request from a pre-hex Haco server can still complete.
     const base64 = encoded.replace(/-/g, "+").replace(/_/g, "/");
     const padded = base64 + "=".repeat((4 - base64.length % 4) % 4);
     return JSON.parse(Buffer.from(padded, "base64").toString("utf8"));
@@ -3395,25 +3377,11 @@ const decodeRoute = (sessionKey) => {
   }
 };
 
-const routeFromMessages = (messages) => {
-  let discovered = null;
-  for (const message of Array.isArray(messages) ? messages : []) {
-    for (const match of textFromMessage(message).matchAll(/\[\[haco-route:([0-9a-f]+)\]\]/gi)) {
-      const route = decodeRoute("hook:haco:" + match[1]);
-      if (route?.conversation_id) discovered = route;
-    }
-  }
-  return discovered;
-};
-
 export default {
   id: "haco-connector",
   name: "Haco Connector",
   description: "Routes OpenClaw results back to Haco.",
   register(api) {
-    // OpenClaw's hook-agent completion event can omit its session key. Capture
-    // the trusted Haco route at the start of the same run, then resolve it again
-    // by run/session ID when the final assistant answer is available.
     const routes = new Map();
     const routeKeys = (event, context) => [
       context?.runId, event?.runId, event?.context?.runId,
@@ -3423,7 +3391,7 @@ export default {
       context?.sessionKey ?? context?.session?.key ?? event?.sessionKey ?? event?.session?.key ?? event?.context?.sessionKey
     );
     const rememberRoute = (event, context) => {
-      const route = sessionRoute(event, context) ?? routeFromMessages(messagesFromRun(event, context));
+      const route = sessionRoute(event, context);
       if (route?.conversation_id) {
         for (const key of routeKeys(event, context)) routes.set(key, route);
       }
@@ -3438,50 +3406,67 @@ export default {
     }, { timeoutMs: 30000 });
 
     api.on("agent_end", async (event, context) => {
-      // OpenClaw resolves plugin configuration per hook invocation. The API-level
-      // fallback supports older runtimes while the hook context is authoritative.
       const config = context?.pluginConfig ?? event?.context?.pluginConfig ?? api.pluginConfig ?? {};
       const route = rememberRoute(event, context)
         ?? routeKeys(event, context).map((key) => routes.get(key)).find(Boolean);
+      const agentId = context?.agentId ?? context?.agent?.id ?? event?.context?.agentId ?? event?.agentId ?? event?.agent?.id;
+      const principalId = config.principalMap?.[agentId];
+      const runId = route?.run_id;
+      const hasConfig = config.hacoUrl && config.token && config.principalMap;
+
       if (!route?.conversation_id) {
         forgetRoute(event, context);
         api.logger?.warn?.("Haco reply skipped: the agent run has no Haco session route.");
         return;
       }
-      const agentId = context?.agentId ?? context?.agent?.id ?? event?.context?.agentId ?? event?.agentId ?? event?.agent?.id;
-      const principalId = config.principalMap?.[agentId];
-      if (!config.hacoUrl || !config.token || !config.principalMap) {
+
+      let terminalStatus = event?.success === false ? "failed" : "completed";
+      let terminalError = null;
+
+      if (!hasConfig || !principalId) {
+        if (runId && hasConfig) {
+          await postRunUpdate(config.hacoUrl, config.token, runId, {
+            status: "delivery_failed",
+            error: principalId ? "connector configuration is incomplete" : "OpenClaw agent is not mapped (" + String(agentId ?? "unknown") + ")",
+            done: true
+          });
+        }
         forgetRoute(event, context);
-        api.logger?.warn?.("Haco reply skipped: connector configuration is incomplete.");
+        if (!hasConfig) api.logger?.warn?.("Haco reply skipped: connector configuration is incomplete.");
+        else api.logger?.warn?.("Haco reply skipped: OpenClaw agent is not mapped (" + String(agentId ?? "unknown") + ").");
         return;
       }
-      if (!principalId) {
-        forgetRoute(event, context);
-        api.logger?.warn?.("Haco reply skipped: OpenClaw agent is not mapped (" + String(agentId ?? "unknown") + ").");
-        return;
-      }
+
       const messages = messagesFromRun(event, context);
       const final = finalAssistantMessage(event, context, messages);
       const body = textFromMessage(final);
       const reasoning = reasoningFromMessage(final);
       const attachments = await attachmentsFromMessage(final, config.hacoUrl, config.token, principalId);
+
       if (!body && !attachments.length) {
+        if (runId) {
+          await postRunUpdate(config.hacoUrl, config.token, runId, {
+            status: "failed",
+            error: "the completed agent run has no assistant text",
+            done: true
+          });
+        }
         forgetRoute(event, context);
         api.logger?.warn?.("Haco reply skipped: the completed agent run has no assistant text.");
         return;
       }
-      if (reasoning) {
-        await postThinking(config.hacoUrl, config.token, {
-          conversation_id: route.conversation_id,
-          agent_id: principalId,
-          parent_message_id: route.parent_message_id ?? null,
-          content: reasoning,
-          done: true
-        });
-      }
+
       const endpoint = String(config.hacoUrl).replace(/\/$/, "") + "/api/integrations/openclaw/events";
       try {
-        const runId = context?.runId ?? event?.context?.runId ?? event?.runId ?? crypto.randomUUID();
+        if (reasoning && runId) {
+          await postRunUpdate(config.hacoUrl, config.token, runId, {
+            reasoning_content: reasoning,
+            content_mode: "snapshot",
+            sequence: 1,
+            done: false
+          });
+        }
+        const fallbackRunId = context?.runId ?? event?.context?.runId ?? event?.runId ?? crypto.randomUUID();
         await deliverWithRetry(endpoint, config.token, {
             agent_id: principalId,
             conversation_id: route.conversation_id,
@@ -3494,14 +3479,27 @@ export default {
               tool_name: "openclaw.agent"
             },
             attachments,
-            delivery_id: route.delivery_id ? String(route.delivery_id) + ":" + String(agentId) : String(runId) + ":" + String(agentId),
+            delivery_id: route.delivery_id ? String(route.delivery_id) + ":" + String(agentId) : String(fallbackRunId) + ":" + String(agentId),
             test_id: route.test_id ?? null,
             relay_depth: Number(route.relay_depth || 0) + 1
         });
         api.logger?.info?.("Haco reply delivered for OpenClaw agent " + String(agentId));
+        terminalStatus = event?.success === false ? "failed" : "completed";
       } catch (error) {
-        api.logger?.warn?.("Haco delivery failed: " + (error instanceof Error ? error.message : String(error)));
+        terminalStatus = "delivery_failed";
+        terminalError = error instanceof Error ? error.message : String(error);
+        api.logger?.warn?.("Haco delivery failed: " + terminalError);
       } finally {
+        if (runId && hasConfig) {
+          await postRunUpdate(config.hacoUrl, config.token, runId, {
+            status: terminalError ? terminalStatus : null,
+            error: terminalError,
+            reasoning_content: terminalError ? null : reasoning,
+            content_mode: reasoning ? "snapshot" : "snapshot",
+            sequence: reasoning ? 2 : 1,
+            done: true
+          });
+        }
         forgetRoute(event, context);
       }
     }, { timeoutMs: 30000 });
@@ -3551,7 +3549,7 @@ async fn create_message(
         let channel_thread_parent = store
             .connection
             .query_row(
-                "SELECT kind = 'channel' FROM conversations WHERE id = ?1",
+                "SELECT kind IN ('channel', 'group') FROM conversations WHERE id = ?1",
                 [&conversation_id],
                 |row| row.get::<_, i64>(0),
             )
@@ -3566,8 +3564,20 @@ async fn create_message(
     for target in openclaw_targets {
         let state = state.clone();
         let message = message.clone();
+        let run_id = Uuid::new_v4().to_string();
+        let delivery_id = Uuid::new_v4().to_string();
+        let parent_msg_id = if channel_thread_parent {
+            Some(message.parent_message_id.as_deref().unwrap_or(&message.id).to_owned())
+        } else {
+            message.parent_message_id.clone()
+        };
+        if let Ok(mut store) = state.store.lock() {
+            if let Ok(run) = store.create_agent_run(&run_id, &delivery_id, &message.conversation_id, parent_msg_id.as_deref(), &target.principal_id, &target.openclaw_agent_id) {
+                let _ = state.events.send(RealtimeEvent::AgentRunUpdated(run));
+            }
+        }
         tokio::spawn(async move {
-            dispatch_haco_message_to_openclaw(state, target, message, channel_thread_parent, 0)
+            dispatch_haco_message_to_openclaw(state, target, message, channel_thread_parent, 0, run_id, delivery_id)
                 .await;
         });
     }
@@ -3580,6 +3590,8 @@ async fn dispatch_haco_message_to_openclaw(
     message: ChatMessage,
     channel_thread_parent: bool,
     relay_depth: u8,
+    run_id: String,
+    delivery_id: String,
 ) {
     let parent_message_id = if channel_thread_parent {
         Some(
@@ -3599,19 +3611,8 @@ async fn dispatch_haco_message_to_openclaw(
         .and_then(|store| store.admin_settings().ok())
         .map(|settings| local_haco_url(&settings))
         .unwrap_or_else(|| "http://127.0.0.1:8787".to_owned());
-    if let Some(principal) = state
-        .store
-        .lock()
-        .ok()
-        .and_then(|store| store.principal(&target.principal_id).ok())
-    {
-        let _ = state.events.send(RealtimeEvent::ReasoningUpdate {
-            conversation_id: message.conversation_id.clone(),
-            principal,
-            parent_message_id: parent_message_id.clone(),
-            content: "Preparing a response…".to_owned(),
-            done: false,
-        });
+    if let Some(run) = state.store.lock().ok().and_then(|store| store.agent_run_by_id(&run_id).ok()) {
+        let _ = state.events.send(RealtimeEvent::AgentRunUpdated(run));
     }
     let expires = (Utc::now() + chrono::Duration::hours(1)).timestamp();
     let attachment_context = message.attachments.iter().map(|attachment| {
@@ -3624,13 +3625,13 @@ async fn dispatch_haco_message_to_openclaw(
         };
         format!("- {} ({}, {} bytes): {url}", attachment.file_name, attachment.media_type, attachment.byte_size)
     }).collect::<Vec<_>>().join("\n");
-    let delivery_id = Uuid::new_v4().to_string();
     let session_key = openclaw_session_key_for(
         &message.conversation_id,
         parent_message_id.as_deref(),
         None,
         Some(&delivery_id),
         relay_depth,
+        Some(&run_id),
     );
     let route_marker = session_key.trim_start_matches("hook:haco:");
     let prompt = format!(
@@ -3649,19 +3650,11 @@ async fn dispatch_haco_message_to_openclaw(
     });
     let result = post_openclaw_hook(&state, &target, payload).await;
     if result.is_err() {
-        if let Some(principal) = state
-            .store
-            .lock()
-            .ok()
-            .and_then(|store| store.principal(&target.principal_id).ok())
-        {
-            let _ = state.events.send(RealtimeEvent::ReasoningUpdate {
-                conversation_id: message.conversation_id.clone(),
-                principal,
-                parent_message_id,
-                content: "Unable to reach this agent right now.".to_owned(),
-                done: true,
-            });
+        if let Ok(mut store) = state.store.lock() {
+            let err_msg = result.as_ref().err().map(String::as_str).unwrap_or("unknown");
+            if let Ok(run) = store.fail_agent_run(&run_id, err_msg) {
+                let _ = state.events.send(RealtimeEvent::AgentRunUpdated(run));
+            }
         }
     }
     if let Ok(mut store) = state.store.lock() {
@@ -3813,27 +3806,52 @@ async fn openclaw_event(
         let channel_thread_parent: bool = store
             .connection
             .query_row(
-                "SELECT kind = 'channel' FROM conversations WHERE id = ?1",
+                "SELECT kind IN ('channel', 'group') FROM conversations WHERE id = ?1",
                 [&conversation_id],
                 |row| row.get(0),
             )
             .map_err(ApiError::from)?;
         (message, relay_targets, channel_thread_parent)
     };
+    let completed_run = delivery_id.as_deref().and_then(|did| {
+        state.store.lock().ok().and_then(|mut store| {
+            store.agent_run_by_delivery(did).ok().flatten().and_then(|run| {
+                store.complete_agent_run(&run.id, &message.id, None).ok()
+            })
+        })
+    });
     let _ = state
         .events
         .send(RealtimeEvent::MessageCreated(message.clone()));
+    if let Some(run) = completed_run {
+        let _ = state.events.send(RealtimeEvent::AgentRunUpdated(run));
+    }
     queue_message_push(state.clone(), &message);
     for target in relay_targets {
         let state = state.clone();
         let message = message.clone();
+        let relay_depth = relay_depth.saturating_add(1);
+        let run_id = Uuid::new_v4().to_string();
+        let delivery_id = Uuid::new_v4().to_string();
+        let parent_msg_id = if channel_thread_parent {
+            Some(message.parent_message_id.as_deref().unwrap_or(&message.id).to_owned())
+        } else {
+            message.parent_message_id.clone()
+        };
+        if let Ok(mut store) = state.store.lock() {
+            if let Ok(run) = store.create_agent_run(&run_id, &delivery_id, &message.conversation_id, parent_msg_id.as_deref(), &target.principal_id, &target.openclaw_agent_id) {
+                let _ = state.events.send(RealtimeEvent::AgentRunUpdated(run));
+            }
+        }
         tokio::spawn(async move {
             dispatch_haco_message_to_openclaw(
                 state,
                 target,
                 message,
                 channel_thread_parent,
-                relay_depth.saturating_add(1),
+                relay_depth,
+                run_id,
+                delivery_id,
             )
             .await;
         });
@@ -3841,35 +3859,71 @@ async fn openclaw_event(
     Ok((StatusCode::CREATED, Json(message)))
 }
 
-async fn openclaw_thinking(
+async fn openclaw_run_update(
+    Path(run_id): Path<String>,
     headers: HeaderMap,
     State(state): State<AppState>,
-    Json(request): Json<OpenClawThinkingRequest>,
-) -> Result<StatusCode, ApiError> {
+    Json(request): Json<RunUpdateRequest>,
+) -> Result<Json<AgentRun>, ApiError> {
     let supplied_token = bearer_token(&headers)
         .ok_or_else(|| ApiError::unauthorized("integration token is required"))?;
-    let principal = {
-        let store = state
+    let run = {
+        let mut store = state
             .store
             .lock()
             .map_err(|_| ApiError::internal("database lock poisoned"))?;
-        let stored_token = store
-            .openclaw_token()?
+        let settings = store.admin_settings()?;
+        if !settings.openclaw_enabled {
+            return Err(ApiError::forbidden("OpenClaw integration is disabled"));
+        }
+        let stored_token = store.openclaw_token()?
             .ok_or_else(|| ApiError::service_unavailable("OpenClaw token is not configured"))?;
         let supplied_hash = format!("sha256:{}", hash_token(supplied_token));
         if supplied_hash != stored_token {
             return Err(ApiError::unauthorized("invalid OpenClaw token"));
         }
-        store.principal(&request.agent_id)?
+        if !store.openclaw_principal_allowed(&run_id).is_ok() {
+            let current = store.agent_run_by_id(&run_id)?;
+            if !store.openclaw_principal_allowed(&current.agent_principal.id)? {
+                return Err(ApiError::forbidden("OpenClaw agent is not connected through the Haco wizard"));
+            }
+        }
+        let current = store.agent_run_by_id(&run_id)?;
+        if current.status == "completed" || current.status == "failed" || current.status == "cancelled" || current.status == "timed_out" || current.status == "delivery_failed" {
+            return Ok(Json(current));
+        }
+        if let Some(summary) = request.activity_summary.as_deref() {
+            store.update_agent_run_activity(&run_id, Some(summary), None)?
+        } else if let Some(content) = request.reasoning_content.as_deref() {
+            store.update_agent_run_reasoning(&run_id, Some(content), &request.content_mode, request.sequence)?
+        } else if let Some(ref status) = request.status {
+            if status == "failed" {
+                store.fail_agent_run(&run_id, request.error.as_deref().unwrap_or("unknown error"))?
+            } else {
+                store.update_agent_run_activity(&run_id, None, Some(status))?
+            }
+        } else if request.done {
+            store.update_agent_run_activity(&run_id, None, Some("completed"))?
+        } else {
+            return Err(ApiError::bad_request("update must include activity_summary, reasoning_content, status, or done"));
+        }
     };
-    let _ = state.events.send(RealtimeEvent::ReasoningUpdate {
-        conversation_id: request.conversation_id,
-        principal,
-        parent_message_id: request.parent_message_id,
-        content: request.content,
-        done: request.done,
-    });
-    Ok(StatusCode::NO_CONTENT)
+    let _ = state.events.send(RealtimeEvent::AgentRunUpdated(run.clone()));
+    Ok(Json(run))
+}
+
+async fn conversation_agent_runs(
+    Path(conversation_id): Path<String>,
+    headers: HeaderMap,
+    State(state): State<AppState>,
+) -> Result<Json<Vec<AgentRun>>, ApiError> {
+    let principal = require_user(&headers, &state)?;
+    let store = state
+        .store
+        .lock()
+        .map_err(|_| ApiError::internal("database lock poisoned"))?;
+    store.require_membership(&conversation_id, &principal.id)?;
+    Ok(Json(store.active_agent_runs_for_conversation(&conversation_id)?))
 }
 
 async fn admin_settings(
@@ -4108,17 +4162,17 @@ async fn handle_socket(
             }
             event = events.recv() => match event {
                 Ok(event) => {
-                    let allowed = match &event {
-                        RealtimeEvent::MessageCreated(message) => store
-                            .lock()
-                            .ok()
-                            .and_then(|store| store.is_member(&message.conversation_id, &principal.id).ok())
-                            .unwrap_or(false),
-                        RealtimeEvent::MessageUpdated(message) => store.lock().ok().and_then(|store| store.is_member(&message.conversation_id, &principal.id).ok()).unwrap_or(false),
+                    let conversation_id: Option<&str> = match &event {
+                        RealtimeEvent::MessageCreated(message) => Some(&message.conversation_id),
+                        RealtimeEvent::MessageUpdated(message) => Some(&message.conversation_id),
                         RealtimeEvent::MessageDeleted { conversation_id, .. }
-                        | RealtimeEvent::Typing { conversation_id, .. }
-                        | RealtimeEvent::ReasoningUpdate { conversation_id, .. } => store.lock().ok().and_then(|store| store.is_member(conversation_id, &principal.id).ok()).unwrap_or(false),
-                        RealtimeEvent::PresenceUpdated(_) => true,
+                        | RealtimeEvent::Typing { conversation_id, .. } => Some(conversation_id),
+                        RealtimeEvent::AgentRunUpdated(run) => Some(&run.conversation_id),
+                        RealtimeEvent::PresenceUpdated(_) => None,
+                    };
+                    let allowed = match conversation_id {
+                        Some(cid) => store.lock().ok().and_then(|store| store.is_member(cid, &principal.id).ok()).unwrap_or(false),
+                        None => true,
                     };
                     if !allowed { continue; }
                     let payload = match serde_json::to_string(&event) { Ok(payload) => payload, Err(_) => continue };
@@ -4357,6 +4411,23 @@ impl Store {
                 delivered_at TEXT,
                 created_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS agent_runs (
+                id TEXT PRIMARY KEY,
+                delivery_id TEXT NOT NULL UNIQUE,
+                conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+                parent_message_id TEXT REFERENCES messages(id) ON DELETE SET NULL,
+                agent_principal_id TEXT NOT NULL REFERENCES principals(id),
+                openclaw_agent_id TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'queued',
+                activity_summary TEXT,
+                reasoning_content TEXT,
+                reasoning_sequence INTEGER NOT NULL DEFAULT 0,
+                error TEXT,
+                started_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                completed_at TEXT,
+                final_message_id TEXT REFERENCES messages(id)
+            );
             CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(message_id UNINDEXED, body);
             CREATE INDEX IF NOT EXISTS idx_messages_conversation_created ON messages(conversation_id, created_at);
             CREATE INDEX IF NOT EXISTS idx_messages_parent ON messages(parent_message_id);
@@ -4368,6 +4439,8 @@ impl Store {
             CREATE INDEX IF NOT EXISTS idx_push_subscriptions_principal ON push_subscriptions(principal_id);
             CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_due ON webhook_deliveries(delivered_at, next_attempt_at);
             CREATE INDEX IF NOT EXISTS idx_openclaw_connection_conversation ON openclaw_connection_conversations(conversation_id);
+            CREATE INDEX IF NOT EXISTS idx_agent_runs_conversation_status ON agent_runs(conversation_id, status);
+            CREATE INDEX IF NOT EXISTS idx_agent_runs_delivery ON agent_runs(delivery_id);
             ",
         )?;
         self.connection.execute("INSERT INTO messages_fts(message_id, body) SELECT id, body FROM messages WHERE NOT EXISTS (SELECT 1 FROM messages_fts f WHERE f.message_id = messages.id)", [])?;
@@ -4394,6 +4467,7 @@ impl Store {
         self.ensure_column("messages", "deleted_at", "TEXT")?;
         self.ensure_column("openclaw_connections", "pending_test_id", "TEXT")?;
         self.ensure_column("openclaw_connections", "pending_test_at", "TEXT")?;
+        self.ensure_column("agent_runs", "final_message_id", "TEXT REFERENCES messages(id)")?;
         self.connection.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_principals_email ON principals(lower(email)) WHERE email IS NOT NULL",
             [],
@@ -5451,6 +5525,10 @@ impl Store {
         body: &str,
         exclude_principal_id: Option<&str>,
     ) -> Result<Vec<OpenClawDispatchTarget>, ApiError> {
+        let settings = self.admin_settings()?;
+        if !settings.openclaw_enabled {
+            return Ok(Vec::new());
+        }
         let config: Option<(String, String, i64)> = self
             .connection
             .query_row(
@@ -5466,7 +5544,17 @@ impl Store {
         if plugin_installed == 0 {
             return Ok(Vec::new());
         }
-        let lower_body = body.to_lowercase();
+        let mentioned_tokens: HashSet<String> = body
+            .split_whitespace()
+            .filter_map(|part| part.strip_prefix('@'))
+            .map(|name| {
+                name.trim_matches(|character: char| {
+                    !character.is_ascii_alphanumeric() && character != '_' && character != '-'
+                })
+                .to_lowercase()
+            })
+            .filter(|name| !name.is_empty())
+            .collect();
         let mut statement = self
             .connection
             .prepare(
@@ -5503,9 +5591,9 @@ impl Store {
             if exclude_principal_id == Some(principal_id.as_str()) {
                 continue;
             }
-            let mentioned = lower_body.contains(&format!("@{}", username.to_lowercase()))
-                || lower_body.contains(&format!("@{}", openclaw_agent_id.to_lowercase()))
-                || lower_body.contains(&format!("@{}", display_name.to_lowercase()));
+            let mentioned = mentioned_tokens.contains(&username.to_lowercase())
+                || mentioned_tokens.contains(&openclaw_agent_id.to_lowercase())
+                || mentioned_tokens.contains(&display_name.to_lowercase());
             // A direct message is already addressed to its member agent. Forums and
             // group chats retain the chosen mention/always routing policy.
             if conversation_kind == "direct" || response_mode == "always" || mentioned {
@@ -6222,6 +6310,28 @@ impl Store {
             .map_err(ApiError::from)?;
         if exists.is_none() {
             return Err(ApiError::not_found("conversation not found"));
+        }
+        if let Some(ref parent_id) = request.parent_message_id {
+            let parent_info: Option<(String, Option<String>)> = self
+                .connection
+                .query_row(
+                    "SELECT conversation_id, parent_message_id FROM messages WHERE id = ?1 AND deleted_at IS NULL",
+                    [parent_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()
+                .map_err(ApiError::from)?;
+            match parent_info {
+                Some((parent_conversation_id, _)) if parent_conversation_id == conversation_id => {}
+                Some(_) => {
+                    return Err(ApiError::bad_request(
+                        "parent message does not belong to the specified conversation",
+                    ));
+                }
+                None => {
+                    return Err(ApiError::bad_request("parent message not found"));
+                }
+            }
         }
         let sender = self.principal(&request.sender_id)?;
         let reasoning = match request
@@ -7115,6 +7225,164 @@ impl Store {
         .map_err(ApiError::from)?;
         tx.commit().map_err(ApiError::from)?;
         Ok(storage_names.into_iter().collect())
+    }
+
+    fn create_agent_run(
+        &mut self,
+        run_id: &str,
+        delivery_id: &str,
+        conversation_id: &str,
+        parent_message_id: Option<&str>,
+        agent_principal_id: &str,
+        openclaw_agent_id: &str,
+    ) -> Result<AgentRun, ApiError> {
+        let now = Utc::now().to_rfc3339();
+        self.connection.execute(
+            "INSERT INTO agent_runs(id, delivery_id, conversation_id, parent_message_id, agent_principal_id, openclaw_agent_id, status, reasoning_sequence, started_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'running', 0, ?7, ?7)",
+            params![run_id, delivery_id, conversation_id, parent_message_id, agent_principal_id, openclaw_agent_id, now],
+        ).map_err(ApiError::from)?;
+        self.agent_run_by_id(run_id)
+    }
+
+    fn agent_run_by_id(&self, run_id: &str) -> Result<AgentRun, ApiError> {
+        let run = self.connection.query_row(
+            "SELECT r.id, r.delivery_id, r.conversation_id, r.parent_message_id, r.agent_principal_id, r.openclaw_agent_id, r.status, r.activity_summary, r.reasoning_content, r.reasoning_sequence, r.error, r.started_at, r.updated_at, r.completed_at, r.final_message_id,
+                    p.id, p.display_name, p.username, p.email, p.kind, p.access_role, p.presence, p.disabled
+             FROM agent_runs r JOIN principals p ON p.id = r.agent_principal_id WHERE r.id = ?1",
+            [run_id],
+            |row| {
+                Ok(AgentRun {
+                    id: row.get(0)?,
+                    delivery_id: row.get(1)?,
+                    conversation_id: row.get(2)?,
+                    parent_message_id: row.get(3)?,
+                    agent_principal: Principal {
+                        id: row.get(15)?,
+                        display_name: row.get(16)?,
+                        username: row.get(17)?,
+                        email: row.get(18)?,
+                        kind: serde_json::from_str::<PrincipalKind>(&format!("\"{}\"", row.get::<_, String>(19)?)).unwrap_or(PrincipalKind::Agent),
+                        access_role: row.get(20)?,
+                        presence: row.get(21)?,
+                        disabled: row.get::<_, i64>(22)? != 0,
+                    },
+                    openclaw_agent_id: row.get(5)?,
+                    status: row.get(6)?,
+                    activity_summary: row.get(7)?,
+                    reasoning_content: row.get(8)?,
+                    reasoning_sequence: row.get(9)?,
+                    error: row.get(10)?,
+                    started_at: parse_time(&row.get::<_, String>(11)?).map_err(to_sql_error)?,
+                    updated_at: parse_time(&row.get::<_, String>(12)?).map_err(to_sql_error)?,
+                    completed_at: row.get::<_, Option<String>>(13)?.map(|s| parse_time(&s)).transpose().map_err(to_sql_error)?,
+                    final_message_id: row.get(14)?,
+                    duration_ms: None,
+                })
+            },
+        ).map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => ApiError::not_found("agent run not found"),
+            other => ApiError::from(other),
+        })?;
+        Ok(run)
+    }
+
+    fn agent_run_by_delivery(&self, delivery_id: &str) -> Result<Option<AgentRun>, ApiError> {
+        let run_id: Option<String> = self.connection.query_row(
+            "SELECT id FROM agent_runs WHERE delivery_id = ?1",
+            [delivery_id],
+            |row| row.get(0),
+        ).optional().map_err(ApiError::from)?;
+        run_id.map(|id| self.agent_run_by_id(&id)).transpose()
+    }
+
+    fn update_agent_run_activity(
+        &mut self,
+        run_id: &str,
+        activity_summary: Option<&str>,
+        status: Option<&str>,
+    ) -> Result<AgentRun, ApiError> {
+        let now = Utc::now().to_rfc3339();
+        let mut sets = vec!["updated_at = ?1".to_owned()];
+        let mut vals: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(now)];
+        if let Some(s) = activity_summary { sets.push("activity_summary = ?".to_owned()); vals.push(Box::new(s.to_owned())); }
+        if let Some(s) = status { sets.push("status = ?".to_owned()); vals.push(Box::new(s.to_owned())); }
+        let sql = format!("UPDATE agent_runs SET {} WHERE id = ?", sets.join(", "));
+        vals.push(Box::new(run_id.to_owned()));
+        let params: Vec<&dyn rusqlite::types::ToSql> = vals.iter().map(|v| v.as_ref()).collect();
+        self.connection.execute(&sql, params.as_slice()).map_err(ApiError::from)?;
+        self.agent_run_by_id(run_id)
+    }
+
+    fn update_agent_run_reasoning(
+        &mut self,
+        run_id: &str,
+        reasoning_content: Option<&str>,
+        content_mode: &str,
+        sequence: i64,
+    ) -> Result<AgentRun, ApiError> {
+        let now = Utc::now().to_rfc3339();
+        let existing_seq: i64 = self.connection.query_row(
+            "SELECT reasoning_sequence FROM agent_runs WHERE id = ?1",
+            [run_id],
+            |row| row.get(0),
+        ).map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => ApiError::not_found("agent run not found"),
+            other => ApiError::from(other),
+        })?;
+        if sequence <= existing_seq { return self.agent_run_by_id(run_id); }
+        let new_content = match content_mode {
+            "delta" => {
+                let existing: Option<String> = self.connection.query_row(
+                    "SELECT reasoning_content FROM agent_runs WHERE id = ?1",
+                    [run_id],
+                    |row| row.get(0),
+                ).map_err(ApiError::from)?;
+                let base = existing.unwrap_or_default();
+                let append = reasoning_content.unwrap_or("");
+                Some(base + append)
+            }
+            _ => reasoning_content.map(|s| s.to_owned()),
+        };
+        self.connection.execute(
+            "UPDATE agent_runs SET reasoning_content = ?1, reasoning_sequence = ?2, status = 'running', updated_at = ?3 WHERE id = ?4",
+            params![new_content, sequence, now, run_id],
+        ).map_err(ApiError::from)?;
+        self.agent_run_by_id(run_id)
+    }
+
+    fn complete_agent_run(
+        &mut self,
+        run_id: &str,
+        final_message_id: &str,
+        status: Option<&str>,
+    ) -> Result<AgentRun, ApiError> {
+        let now = Utc::now().to_rfc3339();
+        let terminal_status = status.unwrap_or("completed");
+        self.connection.execute(
+            "UPDATE agent_runs SET status = ?1, final_message_id = ?2, completed_at = ?3, updated_at = ?3 WHERE id = ?4",
+            params![terminal_status, final_message_id, now, run_id],
+        ).map_err(ApiError::from)?;
+        self.agent_run_by_id(run_id)
+    }
+
+    fn fail_agent_run(&mut self, run_id: &str, error: &str) -> Result<AgentRun, ApiError> {
+        let now = Utc::now().to_rfc3339();
+        self.connection.execute(
+            "UPDATE agent_runs SET status = 'delivery_failed', error = ?1, completed_at = ?2, updated_at = ?2 WHERE id = ?3",
+            params![error, now, run_id],
+        ).map_err(ApiError::from)?;
+        self.agent_run_by_id(run_id)
+    }
+
+    fn active_agent_runs_for_conversation(&self, conversation_id: &str) -> Result<Vec<AgentRun>, ApiError> {
+        let mut s = self.connection.prepare(
+            "SELECT id FROM agent_runs WHERE conversation_id = ?1 AND status IN ('queued','running') ORDER BY started_at"
+        ).map_err(ApiError::from)?;
+        let ids = s.query_map([conversation_id], |row| row.get::<_, String>(0))
+            .map_err(ApiError::from)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(ApiError::from)?;
+        ids.iter().map(|id| self.agent_run_by_id(id)).collect()
     }
 }
 
@@ -8446,12 +8714,10 @@ mod tests {
         assert!(OPENCLAW_CONNECTOR_MODULE.contains("before_agent_start"));
         assert!(OPENCLAW_CONNECTOR_MODULE.contains("api.on(\"agent_end\""));
         assert!(OPENCLAW_CONNECTOR_MODULE.contains("const routes = new Map();"));
-        assert!(OPENCLAW_CONNECTOR_MODULE.contains("const routeFromMessages = (messages) =>"));
         assert!(OPENCLAW_CONNECTOR_MODULE.contains("const messagesFromRun = (event, context) =>"));
         assert!(OPENCLAW_CONNECTOR_MODULE.contains("const finalAssistantMessage = (event, context, messages) =>"));
         assert!(OPENCLAW_CONNECTOR_MODULE.contains("context?.agent?.id"));
         assert!(OPENCLAW_CONNECTOR_MODULE.contains("parent_message_id: route.parent_message_id ?? null"));
-        assert!(OPENCLAW_CONNECTOR_MODULE.contains("haco-route:([0-9a-f]+)"));
         assert!(OPENCLAW_CONNECTOR_MODULE.contains("Buffer.from(encoded, \"hex\")"));
         assert!(OPENCLAW_CONNECTOR_MODULE.contains("Haco reply skipped:"));
     }

@@ -1,4 +1,4 @@
-const state = { conversations: [], selected: null, messages: [], currentUser: null, replyTo: null, threadRoot: null, socket: null, filter: 'all', adminToken: null, adminSettings: null, settingsTab: 'workspace', settingsView: 'personal', authStatus: null, users: [], conversationMembers: {}, modalSubmit: null, typingTimer: null, draftTimer: null, remoteTyping: new Map(), pendingAttachments: [], threadPendingAttachments: [], hasOlder: false, notifications: [], pushRegistration: null, pushConfiguration: null, openclawDiscovery: null, popoverMessage: null, richMode: false, loadingOlder: false, reconnectAttempts: 0, agentThinking: null, streamingReasoning: null, sending: false, _selectGeneration: 0 };
+const state = { conversations: [], selected: null, messages: [], currentUser: null, replyTo: null, threadRoot: null, socket: null, filter: 'all', adminToken: null, adminSettings: null, settingsTab: 'workspace', settingsView: 'personal', authStatus: null, users: [], conversationMembers: {}, modalSubmit: null, typingTimer: null, draftTimer: null, remoteTyping: new Map(), pendingAttachments: [], threadPendingAttachments: [], hasOlder: false, notifications: [], pushRegistration: null, pushConfiguration: null, openclawDiscovery: null, popoverMessage: null, richMode: false, loadingOlder: false, reconnectAttempts: 0, agentThinking: null, agentRuns: new Map(), sending: false, _selectGeneration: 0 };
 const dom = {
   list: document.querySelector('#conversations'), forumList: document.querySelector('#forum-conversations'), directList: document.querySelector('#direct-conversations'), forumSection: document.querySelector('#forum-section'), directSection: document.querySelector('#direct-section'), feed: document.querySelector('#messages'), title: document.querySelector('#conversation-title'),
   kind: document.querySelector('#conversation-kind'), description: document.querySelector('#conversation-description'), status: document.querySelector('#connection-status'),
@@ -52,6 +52,29 @@ const formatMessageDate = (createdAt) => {
   if (isYesterday) return 'Yesterday';
   return new Intl.DateTimeFormat([], { weekday: 'long', month: 'short', day: 'numeric' }).format(msgDate);
 };
+
+function isTerminalRunStatus(status) {
+  return ['completed', 'failed', 'cancelled', 'timed_out', 'delivery_failed'].includes(status);
+}
+
+function activeRunsForConversation(conversationId) {
+  return [...state.agentRuns.values()].filter((run) =>
+    run.conversation_id === conversationId && !isTerminalRunStatus(run.status)
+  );
+}
+
+function activeRunsForThread(threadRootId) {
+  return activeRunsForConversation(state.selected).filter((run) =>
+    run.parent_message_id === threadRootId
+  );
+}
+
+function activeRunsForMainFeed() {
+  return activeRunsForConversation(state.selected).filter((run) =>
+    !run.parent_message_id
+  );
+}
+
 const renderPlainTextBody = (text) => {
   if (!text) return '';
   const html = text.split(/(```[\s\S]*?```|`[^`]+`)/g).map((part) => {
@@ -1030,41 +1053,85 @@ function renderMessages() {
     }
   });
 
-  const existingThinking = dom.feed.querySelector('.message.agent.thinking-fade-in');
-  if (existingThinking) existingThinking.remove();
+  const existingThinking = dom.feed.querySelectorAll('.message.agent.thinking-fade-in, .message.agent-run');
+  existingThinking.forEach((el) => el.remove());
   if (!sharedConversation) {
-    const thinking = state.streamingReasoning;
-    if (thinking?.conversationId === state.selected) {
-      dom.feed.append(createLiveThinkingNode(thinking));
-    } else if (!thinking && state.agentThinking?.conversationId === state.selected) {
-      dom.feed.append(createLiveThinkingNode(state.agentThinking));
+    const runs = activeRunsForMainFeed();
+    runs.forEach((run) => dom.feed.append(createLiveThinkingNode(run)));
+    if (!runs.length && state.agentThinking?.conversationId === state.selected) {
+      dom.feed.append(createLiveThinkingNode({ agent_principal: { display_name: state.agentThinking.name }, status: 'running', name: state.agentThinking.name, conversation_id: state.selected }));
     }
   }
 
-  if (!visibleMessages.length && !(state.streamingReasoning?.conversationId === state.selected) && !(state.agentThinking?.conversationId === state.selected)) dom.feed.innerHTML = '<div class="empty-feed"><svg width="36" height="36" viewBox="0 0 36 36" fill="none" aria-hidden="true"><circle cx="18" cy="13" r="5" stroke="currentColor" stroke-width="1.5"/><path d="M4 32c0-5.5 4-10 14-10s14 4.5 14 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M18 1v4M18 22v4M6 6l3 3M27 9l-3 3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" opacity="0.4"/></svg><strong>No messages yet</strong><p>Start the conversation with a person or agent.</p></div>';
+  const hasLiveContent = activeRunsForConversation(state.selected).length > 0 || state.agentThinking?.conversationId === state.selected;
+  if (!visibleMessages.length && !hasLiveContent) dom.feed.innerHTML = '<div class="empty-feed"><svg width="36" height="36" viewBox="0 0 36 36" fill="none" aria-hidden="true"><circle cx="18" cy="13" r="5" stroke="currentColor" stroke-width="1.5"/><path d="M4 32c0-5.5 4-10 14-10s14 4.5 14 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M18 1v4M18 22v4M6 6l3 3M27 9l-3 3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" opacity="0.4"/></svg><strong>No messages yet</strong><p>Start the conversation with a person or agent.</p></div>';
   dom.loadOlder.hidden = !state.hasOlder;
   const latestMessage = visibleMessages[visibleMessages.length - 1];
   const dateLabel = document.querySelector('.date-divider span');
   if (dateLabel) {
     dateLabel.textContent = latestMessage ? formatMessageDate(latestMessage.created_at) : '';
   }
-  if (!state.loadingOlder && (scrollWasAtBottom || state.streamingReasoning?.conversationId === state.selected || state.agentThinking?.conversationId === state.selected)) {
+  if (!state.loadingOlder && (scrollWasAtBottom || activeRunsForConversation(state.selected).length > 0 || state.agentThinking?.conversationId === state.selected)) {
     requestAnimationFrame(() => { dom.feed.scrollTop = dom.feed.scrollHeight; });
   }
   state.loadingOlder = false;
 }
 
-function createLiveThinkingNode(thinking, options = {}) {
-  const elapsed = Math.max(0, Math.round((Date.now() - (state._thinkingStart || Date.now())) / 1000));
+function createLiveThinkingNode(run, options = {}) {
+  const isRun = Boolean(run.conversation_id);
+  const name = isRun ? (run.agent_principal?.display_name || 'Agent') : (run.name || 'Agent');
   const article = document.createElement('article');
-  article.className = `message agent thinking-fade-in${thinking.done ? ' thinking-done' : ''}${options.thread ? ' thread-context' : ''}`;
-  const avatar = initialsFor(thinking.name || 'Agent');
-  const label = thinking.done
-    ? `Worked${elapsed > 60 ? ` for ${Math.floor(elapsed / 60)}m` : ''}`
-    : `Thinking${elapsed > 3 ? ` for ${elapsed}s` : ''}…`;
-  const content = thinking.content || 'Preparing a response…';
-  const spinnerHtml = thinking.done ? '' : '<span class="thinking-spinner"></span>';
-  article.innerHTML = `<span class="avatar-stack message-avatar-stack"><span class="avatar">${escapeHtml(avatar)}</span><span class="presence-bar agent online"></span></span><div class="message-content"><div class="message-meta"><strong>${escapeHtml(thinking.name || 'Agent')}</strong></div><div class="message-bubble thinking-live-bubble"><details class="reasoning-trace"><summary>${spinnerHtml}<span class="thinking-label">${escapeHtml(label)}</span><span class="thinking-disclosure" aria-hidden="true">⌄</span></summary><pre class="thinking-content">${escapeHtml(content)}</pre></details></div></div>`;
+  article.className = `message agent-run${isTerminalRunStatus(run.status) ? ' thinking-done' : ' thinking-fade-in'}${options.thread ? ' thread-context' : ''}`;
+  if (isRun) article.dataset.runId = run.id;
+  const avatar = initialsFor(name);
+  const isDone = isTerminalRunStatus(run.status);
+  const isError = run.status === 'failed' || run.status === 'delivery_failed' || run.status === 'timed_out';
+
+  const startTime = isRun ? new Date(run.started_at).getTime() : Date.now();
+  const endTime = isRun ? (run.completed_at ? new Date(run.completed_at).getTime() : Date.now()) : Date.now();
+  const elapsed = Math.max(0, Math.round((endTime - startTime) / 1000));
+
+  let label;
+  if (isError) {
+    label = run.error ? `Error: ${run.error}`.substring(0, 60) : 'Error';
+  } else if (isDone) {
+    label = elapsed > 60 ? `Worked for ${Math.floor(elapsed / 60)}m ${elapsed % 60}s` : `Worked for ${elapsed}s`;
+  } else {
+    label = run.activity_summary ? `Agent activity: ${run.activity_summary}`.substring(0, 60) : 'Agent is working\u2026';
+  }
+
+  let summaryContent = '';
+  let reasoningContent = '';
+  let showActivity = false;
+  let showReasoning = false;
+
+  if (run.activity_summary) {
+    summaryContent = run.activity_summary;
+    showActivity = true;
+  }
+  if (run.reasoning_content) {
+    reasoningContent = run.reasoning_content;
+    showReasoning = true;
+  }
+  if (run.error) {
+    summaryContent = run.error;
+    showActivity = true;
+  }
+
+  const spinnerHtml = isDone ? '' : '<span class="thinking-spinner"></span>';
+
+  let detailsHtml = '';
+  if (showActivity) {
+    detailsHtml += `<details class="agent-activity"${!showReasoning ? ' open' : ''}><summary>${spinnerHtml}<span class="thinking-label">${escapeHtml(label)}</span><span class="thinking-disclosure" aria-hidden="true">\u2324</span></summary><pre class="activity-content">${escapeHtml(summaryContent)}</pre></details>`;
+  }
+  if (showReasoning) {
+    detailsHtml += `<details class="reasoning-trace" open><summary><span class="thinking-label">Reasoning summary</span><span class="thinking-disclosure" aria-hidden="true">\u2324</span></summary><pre class="thinking-content">${escapeHtml(reasoningContent)}</pre></details>`;
+  }
+  if (!showActivity && !showReasoning) {
+    detailsHtml = `<div class="thinking-label-only">${spinnerHtml}<span class="thinking-label">${escapeHtml(label)}</span></div>`;
+  }
+
+  article.innerHTML = `<span class="avatar-stack message-avatar-stack"><span class="avatar">${escapeHtml(avatar)}</span><span class="presence-bar agent online"></span></span><div class="message-content"><div class="message-meta"><strong>${escapeHtml(name)}</strong></div><div class="message-bubble thinking-live-bubble">${detailsHtml}</div></div>`;
   return article;
 }
 
@@ -1119,32 +1186,34 @@ function createMessageNode(message, options = {}) {
   article.classList.toggle('deleted', Boolean(message.is_deleted));
   article.querySelector('.edited-label').hidden = !message.edited_at;
   if (message.activity || message.reasoning) {
-    const reasoning = article.querySelector('.reasoning-trace');
-    if (!reasoning) return;
-    reasoning.hidden = false;
-    const spinner = reasoning.querySelector('.thinking-spinner');
-    if (spinner) spinner.hidden = true;
-    const label = reasoning.querySelector('.thinking-label');
-    if (label) {
-      const msgTime = new Date(message.created_at).getTime();
-      const now = Date.now();
-      const elapsed = Math.round((now - msgTime) / 1000);
-      if (elapsed < 60) {
-        label.textContent = 'Worked';
-      } else {
-        label.textContent = `Worked for ${Math.floor(elapsed / 60)}m`;
+    const agentActivity = article.querySelector('.agent-activity');
+    const reasoningTrace = article.querySelector('.reasoning-trace');
+
+    if (message.activity?.summary) {
+      if (agentActivity) {
+        agentActivity.hidden = false;
+        const label = agentActivity.querySelector('.thinking-label');
+        if (label) {
+          if (message.activity.duration_ms) {
+            const secs = Math.round(message.activity.duration_ms / 1000);
+            label.textContent = secs > 60 ? `Worked for ${Math.floor(secs / 60)}m ${secs % 60}s` : `Worked for ${secs}s`;
+          } else {
+            label.textContent = 'Agent activity';
+          }
+        }
+        const content = agentActivity.querySelector('.activity-content');
+        if (content) { content.textContent = message.activity.summary; content.hidden = false; }
       }
+      const spin = article.querySelector('.thinking-spinner');
+      if (spin) spin.hidden = true;
     }
+
     if (message.reasoning?.content) {
-      const content = reasoning.querySelector('.thinking-content');
-      if (!content) return;
-      content.textContent = message.reasoning.content;
-      content.hidden = false;
-    } else if (message.activity?.summary) {
-      const content = reasoning.querySelector('.thinking-content');
-      if (!content) return;
-      content.textContent = message.activity.summary;
-      content.hidden = false;
+      if (reasoningTrace) {
+        reasoningTrace.hidden = false;
+        const content = reasoningTrace.querySelector('.thinking-content');
+        if (content) { content.textContent = message.reasoning.content; content.hidden = false; }
+      }
     }
   }
   (message.attachments || []).forEach((attachment) => {
@@ -1271,7 +1340,7 @@ async function selectConversation(id, targetMessageId = null) {
   state.selected = id;
   state.replyTo = null;
   state.agentThinking = null;
-  state.streamingReasoning = null;
+  state.agentRuns = new Map();
   state._thinkingStart = null;
   closeThread();
   renderConversations();
@@ -1286,6 +1355,9 @@ async function selectConversation(id, targetMessageId = null) {
     state.messages = await request(`/api/conversations/${id}/messages?limit=50`);
     if (generation !== state._selectGeneration) return;
     state.hasOlder = state.messages.length === 50;
+    const runs = await request(`/api/conversations/${id}/agent-runs`);
+    if (generation !== state._selectGeneration) return;
+    state.agentRuns = new Map(runs.map((r) => [r.id, r]));
     const draft = await request(`/api/conversations/${id}/draft`);
     if (generation !== state._selectGeneration) return;
     dom.input.value = draft.body || ''; resizeComposer(); updateSendButton();
@@ -1345,18 +1417,23 @@ function renderThread() {
   const conversation = currentConversation();
   if (!isSharedConversation(conversation)) { closeThread(); return; }
   const replies = state.messages.filter((message) => message.parent_message_id === state.threadRoot.id);
+  const activeRuns = activeRunsForThread(state.threadRoot.id);
+
   dom.threadRoot.innerHTML = '';
   dom.threadMessages.innerHTML = '';
   dom.threadRoot.append(createMessageNode(state.threadRoot, { thread: true }));
-  replies.forEach((reply) => dom.threadMessages.append(createMessageNode(reply, { thread: true })));
-  if (state.streamingReasoning?.conversationId === state.selected && state.streamingReasoning?.parentMessageId === state.threadRoot.id) {
-    dom.threadMessages.append(createLiveThinkingNode(state.streamingReasoning, { thread: true }));
+
+  if (!replies.length && !activeRuns.length) {
+    dom.threadMessages.innerHTML = '<div class="thread-empty"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 4h16v12H8l-4 4V4Z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg><p>No replies yet. Start the thread below.</p></div>';
+  } else {
+    replies.forEach((reply) => dom.threadMessages.append(createMessageNode(reply, { thread: true })));
+    activeRuns.forEach((run) => dom.threadMessages.append(createLiveThinkingNode(run, { thread: true })));
   }
+
   dom.threadCount.textContent = `${replies.length} ${replies.length === 1 ? 'reply' : 'replies'}`;
   document.querySelector('.thread-header .eyebrow').textContent = conversation.kind === 'channel' ? 'Forum thread' : 'Group thread';
-  if (!replies.length) dom.threadMessages.innerHTML = '<div class="thread-empty"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 4h16v12H8l-4 4V4Z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg><p>No replies yet. Start the thread below.</p></div>';
   const wasAtBottom = dom.threadMessages.scrollTop >= dom.threadMessages.scrollHeight - dom.threadMessages.clientHeight - 20;
-  if (wasAtBottom || state.streamingReasoning?.conversationId === state.selected) {
+  if (wasAtBottom || activeRuns.length > 0) {
     dom.threadMessages.scrollTop = dom.threadMessages.scrollHeight;
   }
 }
@@ -1571,6 +1648,15 @@ async function catchUpMessages() {
     await request(`/api/conversations/${state.selected}/read`, { method: 'POST' });
   } catch (_) {}
 }
+async function catchUpAgentRuns() {
+  if (!state.selected || !state.currentUser) return;
+  try {
+    const runs = await request(`/api/conversations/${state.selected}/agent-runs`);
+    state.agentRuns = new Map(runs.map((r) => [r.id, r]));
+    renderMessages();
+    if (state.threadRoot) renderThread();
+  } catch (_) {}
+}
 function setStatus(text, online) {
   if (dom.status) dom.status.textContent = text;
   if (online) applyPresence(dom.profilePresence, state.currentUser);
@@ -1593,6 +1679,7 @@ function connectSocket() {
         connectSocket();
         refreshConversations();
         catchUpMessages();
+        catchUpAgentRuns();
       }, delay);
     }
   };
@@ -1604,6 +1691,12 @@ function connectSocket() {
       refreshNotifications();
       if (update.data.sender?.kind === 'agent' && update.data.conversation_id === state.selected) {
         if (state.agentThinking?.agentId === update.data.sender.id) state.agentThinking = null;
+        for (const [id, run] of state.agentRuns) {
+          if (run.agent_principal?.id === update.data.sender.id && !isTerminalRunStatus(run.status)) {
+            run.status = 'completed';
+            run.completed_at = update.data.created_at;
+          }
+        }
       }
       if (update.data.conversation_id === state.selected && !state.messages.some((message) => message.id === update.data.id)) {
         state.messages.push(update.data);
@@ -1629,36 +1722,22 @@ function connectSocket() {
       if (state.currentUser?.id === update.data.id) { state.currentUser.presence = update.data.presence; renderProfile(); }
       renderConversations();
       if (!dom.membersPopover.hidden && state.conversationMembers[state.selected]) renderMembersPopover(state.conversationMembers[state.selected]);
-    } else if (update.type === 'reasoning_update') {
-      if (update.data.conversation_id === state.selected) {
+    } else if (update.type === 'agent_run_updated') {
+      const run = update.data;
+      if (run.conversation_id === state.selected) {
         state.agentThinking = null;
-        if (!state.streamingReasoning || state.streamingReasoning.agentId !== update.data.principal?.id || state.streamingReasoning.parentMessageId !== (update.data.parent_message_id || null)) {
-          state.streamingReasoning = { agentId: update.data.principal?.id, name: update.data.principal?.display_name, content: '', parentMessageId: update.data.parent_message_id || null, conversationId: state.selected, done: false };
-          state._thinkingStart = Date.now();
-        }
-        if (state.streamingReasoning) {
-          if (update.data.done) state.streamingReasoning.done = true;
-          if (update.data.parent_message_id) state.streamingReasoning.parentMessageId = update.data.parent_message_id;
-          if (update.data.content) state.streamingReasoning.content = update.data.content;
-          renderMessages();
-          if (state.threadRoot && state.streamingReasoning.parentMessageId === state.threadRoot.id) renderThread();
-        }
-        if (update.data.done) {
-          const reasoningRef = state.streamingReasoning;
-          const doneEl = dom.feed.querySelector('.thinking-done');
-          if (doneEl) doneEl.classList.add('thinking-fade-out');
-          const isError = update.data.content?.startsWith('Unable to reach');
-          if (isError) {
-            state.messages.push({ id: `error-${Date.now()}`, sender: update.data.principal, body: update.data.content, created_at: new Date().toISOString(), conversation_id: state.selected, is_system: true });
-            requestAnimationFrame(() => { dom.feed.scrollTop = dom.feed.scrollHeight; });
-          }
-          setTimeout(() => {
-            if (state.streamingReasoning === reasoningRef) {
-              state.streamingReasoning = null;
-              state._thinkingStart = null;
-              if (!isError) { renderMessages(); if (state.threadRoot) renderThread(); }
+        state.agentRuns.set(run.id, run);
+        renderMessages();
+        if (state.threadRoot) renderThread();
+        if (isTerminalRunStatus(run.status)) {
+          window.setTimeout(() => {
+            const current = state.agentRuns.get(run.id);
+            if (current && isTerminalRunStatus(current.status)) {
+              state.agentRuns.delete(run.id);
+              renderMessages();
+              if (state.threadRoot) renderThread();
             }
-          }, isError ? 0 : 800);
+          }, 3000);
         }
       }
     }
