@@ -3253,6 +3253,7 @@ const OPENCLAW_CONNECTOR_MANIFEST: &str = r#"{
     "properties": {
       "hacoUrl": { "type": "string" },
       "token": { "type": "string" },
+      "thinkingStreaming": { "type": "boolean", "default": true },
       "principalMap": {
         "type": "object",
         "additionalProperties": { "type": "string" }
@@ -3262,6 +3263,7 @@ const OPENCLAW_CONNECTOR_MANIFEST: &str = r#"{
   "uiHints": {
     "hacoUrl": { "label": "Local Haco URL" },
     "token": { "label": "Haco connector token", "sensitive": true },
+    "thinkingStreaming": { "label": "Stream model-provided thinking", "advanced": true },
     "principalMap": { "advanced": true }
   }
 }"#;
@@ -3281,23 +3283,25 @@ const textFromMessage = (message) => {
     .trim();
 };
 
-// Haco only stores reasoning that an integration explicitly exposes as
-// user-visible application data. This does not inspect provider internals.
+// Haco only stores model-provided thinking that OpenClaw explicitly exposes as
+// application data. This does not inspect provider internals or synthesize
+// reasoning for models that do not provide it.
 const reasoningFromMessage = (message) => {
-  if (!message) return null;
-  if (typeof message.reasoning === "string" && message.reasoning.trim()) {
-    return message.reasoning.trim();
-  }
+  if (!message || typeof message !== "object") return null;
+  const direct = [message.reasoning_content, message.reasoning, message.thinking]
+    .filter((value) => typeof value === "string" && value.trim())
+    .map((value) => value.trim());
+  if (direct.length) return direct.join("\n");
   if (!Array.isArray(message.content)) return null;
-  const parts = message.content.filter(
-    (part) =>
-      part &&
-      part.type === "reasoning" &&
-      typeof part.reasoning === "string" &&
-      part.reasoning.trim(),
-  );
-  return parts.length ? parts.map((part) => part.reasoning).join("\n").trim() : null;
+  const parts = message.content
+    .filter((part) => part && (part.type === "reasoning" || part.type === "thinking"))
+    .map((part) => part.reasoning_content ?? part.reasoning ?? part.thinking ?? part.text)
+    .filter((value) => typeof value === "string" && value.trim())
+    .map((value) => value.trim());
+  return parts.length ? parts.join("\n") : null;
 };
+
+const thinkingStreamingEnabled = (config) => config?.thinkingStreaming !== false;
 
 const messagesFromRun = (event, context) =>
   [
@@ -3536,6 +3540,7 @@ export default {
         stream = {
           sequence: 0,
           reasoningBuffer: "",
+          thinkingContent: "",
           pendingActivity: null,
           lastActivity: "",
           lastFlushAt: 0,
@@ -3627,13 +3632,51 @@ export default {
       scheduleRunFlush(config, runId);
     };
 
+    // `llm_output` contains one completed model attempt. A tool-using agent can
+    // produce several attempts, so retain each distinct explicit thinking block
+    // in run order. If a runtime reports a cumulative snapshot, append only its
+    // new suffix instead of duplicating the previous block.
+    const mergeThinkingSnapshot = (stream, thinking) => {
+      const next = typeof thinking === "string" ? thinking.trim() : "";
+      if (!next) return "";
+      const current = stream.thinkingContent;
+      if (!current) {
+        stream.thinkingContent = next;
+        return next;
+      }
+      if (current === next || current.startsWith(next) || current.endsWith(next)) return "";
+      if (next.startsWith(current)) {
+        const delta = next.slice(current.length);
+        stream.thinkingContent = next;
+        return delta;
+      }
+      const delta = "\n\n" + next;
+      stream.thinkingContent = current + delta;
+      return delta;
+    };
+
+    const queueThinkingSnapshot = async (config, runId, thinking) => {
+      if (!runId) return;
+      const stream = streamFor(runId);
+      if (stream.terminal) return;
+      const hadThinking = Boolean(stream.thinkingContent);
+      const delta = mergeThinkingSnapshot(stream, thinking);
+      if (!delta) return;
+      stream.reasoningBuffer += delta;
+      if (!hadThinking) return flushRunStream(config, runId);
+      scheduleRunFlush(config, runId);
+    };
+
     const flushFinalReasoning = async (config, runId, reasoning) => {
       if (!runId) return;
+      const stream = streamFor(runId);
+      const delta = mergeThinkingSnapshot(stream, reasoning);
+      if (delta) stream.reasoningBuffer += delta;
       await flushRunStream(config, runId);
-      if (!reasoning) return;
+      if (!stream.thinkingContent) return;
       await enqueueRunUpdate(config, runId, {
         status: "running",
-        reasoning_content: reasoning,
+        reasoning_content: stream.thinkingContent,
         content_mode: "snapshot",
         sequence: nextSequence(runId),
         done: false,
@@ -3729,6 +3772,23 @@ export default {
       { timeoutMs: 5000 },
     );
 
+    // OpenClaw only invokes this hook when the active model attempt has an
+    // output. Models that do not expose structured thinking simply produce no
+    // Haco update, leaving the normal activity stream unchanged.
+    api.on(
+      "llm_output",
+      async (event, context) => {
+        const config = configFor(api, event, context);
+        if (!thinkingStreamingEnabled(config)) return;
+        const route = routeFor(event, context);
+        const runId = route?.run_id;
+        const thinking = reasoningFromMessage(event?.lastAssistant);
+        if (!runId || !thinking) return;
+        await queueThinkingSnapshot(config, runId, thinking);
+      },
+      { timeoutMs: 5000 },
+    );
+
     const completeAgentEnd = async (event, context, route) => {
       const config = configFor(api, event, context);
       const runId = typeof route?.run_id === "string" && route.run_id ? route.run_id : null;
@@ -3754,6 +3814,7 @@ export default {
         const body = textFromMessage(final);
         const reasoning = reasoningFromMessage(final);
         const attachments = await attachmentsFromMessage(final);
+        let deliveredThinking = reasoning;
 
         if (!body && !attachments.length) {
           terminalStatus = "failed";
@@ -3762,7 +3823,10 @@ export default {
           return;
         }
 
-        if (runId) await flushFinalReasoning(config, runId, reasoning);
+        if (runId) {
+          await flushFinalReasoning(config, runId, reasoning);
+          deliveredThinking = streamFor(runId).thinkingContent || reasoning;
+        }
 
         const endpoint = String(config.hacoUrl).replace(/\/$/, "") + "/api/integrations/openclaw/events";
         const deliveryId =
@@ -3774,7 +3838,7 @@ export default {
           conversation_id: route.conversation_id,
           parent_message_id: route.parent_message_id ?? null,
           body: body || "Shared an attachment.",
-          reasoning,
+          reasoning: deliveredThinking,
           activity: {
             status: event?.success === false ? "failed" : "completed",
             summary:
@@ -3836,11 +3900,10 @@ export default {
       { timeoutMs: 30000 },
     );
 
-    // before_agent_start is retained only for legacy route capture. The current
-    // OpenClaw lifecycle hooks for live updates are before_agent_run,
-    // before_tool_call, after_tool_call, and agent_end. There is no documented
-    // user-visible reasoning-delta event, so this connector does not register
-    // guessed hooks or extract hidden model reasoning.
+    // before_agent_start is retained only for legacy route capture. Live Haco
+    // updates use documented lifecycle hooks plus llm_output for explicit,
+    // model-provided thinking. Models without structured thinking fall back to
+    // activity updates and any final summary already present on agent_end.
   },
 };
 "#;

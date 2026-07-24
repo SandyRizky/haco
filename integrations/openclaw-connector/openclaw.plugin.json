@@ -9,6 +9,7 @@
     "properties": {
       "hacoUrl": { "type": "string" },
       "token": { "type": "string" },
+      "thinkingStreaming": { "type": "boolean", "default": true },
       "principalMap": {
         "type": "object",
         "additionalProperties": { "type": "string" }
@@ -18,6 +19,7 @@
   "uiHints": {
     "hacoUrl": { "label": "Local Haco URL" },
     "token": { "label": "Haco connector token", "sensitive": true },
+    "thinkingStreaming": { "label": "Stream model-provided thinking", "advanced": true },
     "principalMap": { "advanced": true }
   }
 }

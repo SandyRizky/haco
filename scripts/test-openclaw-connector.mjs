@@ -78,7 +78,7 @@ const contextFor = (runId, sessionId) => ({
 const waitForStreamFlush = () => new Promise((resolve) => setTimeout(resolve, 5));
 
 // Capture a trusted Haco route at the documented agent-start hook, then stream
-// only documented activity hooks. The OpenClaw API has no reasoning-delta hook.
+// activity plus explicit thinking from the supported llm_output hook.
 const primary = harness();
 const primaryRoute = {
   conversationId: "dm-eunha",
@@ -121,6 +121,36 @@ assert.equal(activityUpdates[1]?.activity_summary, "Using web_search…");
 assert.equal(activityUpdates[2]?.activity_summary, "Finished web_search");
 assert.equal(activityUpdates[3]?.activity_summary, "read_file failed: permission denied");
 
+await primary.handlers.get("llm_output")(
+  {
+    runId: "openclaw-run-1",
+    assistantTexts: [],
+    lastAssistant: {
+      role: "assistant",
+      reasoning_content: "I checked the requested sources.",
+    },
+  },
+  primaryContext,
+);
+assert.deepEqual(updatesFor("haco-run-1")[4], {
+  status: "running",
+  reasoning_content: "I checked the requested sources.",
+  content_mode: "delta",
+  sequence: 5,
+  done: false,
+});
+await primary.handlers.get("llm_output")(
+  {
+    runId: "openclaw-run-1",
+    assistantTexts: [],
+    lastAssistant: {
+      role: "assistant",
+      reasoning_content: "I found the final delivery path.",
+    },
+  },
+  primaryContext,
+);
+
 await primary.handlers.get("agent_end")(
   {
     runId: "openclaw-run-1",
@@ -130,7 +160,7 @@ await primary.handlers.get("agent_end")(
         role: "assistant",
         content: [
           { type: "text", text: "Reply from the trusted route" },
-          { type: "reasoning", reasoning: "I checked the requested sources." },
+          { type: "reasoning", reasoning: "I found the final delivery path." },
         ],
       },
     ],
@@ -139,17 +169,20 @@ await primary.handlers.get("agent_end")(
 );
 
 const primaryUpdates = updatesFor("haco-run-1");
-assert.equal(primaryUpdates.at(-2)?.reasoning_content, "I checked the requested sources.");
+assert.equal(
+  primaryUpdates.at(-2)?.reasoning_content,
+  "I checked the requested sources.\n\nI found the final delivery path.",
+);
 assert.equal(primaryUpdates.at(-2)?.content_mode, "snapshot");
 assert.deepEqual(primaryUpdates.at(-1), {
   status: "completed",
   error: null,
-  sequence: 6,
+  sequence: 8,
   done: true,
 });
 assert.deepEqual(
   primaryUpdates.map((update) => update.sequence),
-  [1, 2, 3, 4, 5, 6],
+  [1, 2, 3, 4, 5, 6, 7, 8],
   "each run must use monotonic update sequences",
 );
 assert.equal(deliveriesFor("dm-eunha")[0]?.body, "Reply from the trusted route");
@@ -157,6 +190,10 @@ assert.equal(
   deliveriesFor("dm-eunha")[0]?.delivery_id,
   "delivery-exact",
   "the final delivery ID must exactly match the Haco run delivery ID",
+);
+assert.equal(
+  deliveriesFor("dm-eunha")[0]?.reasoning,
+  "I checked the requested sources.\n\nI found the final delivery path.",
 );
 
 // A final answer with no explicit reasoning must still finish its run.
@@ -171,6 +208,14 @@ await noReasoning.handlers.get("before_agent_run")(
   {},
   { ...noReasoningContext, sessionKey: sessionKey(noReasoningRoute) },
 );
+await noReasoning.handlers.get("llm_output")(
+  {
+    runId: "openclaw-run-2",
+    assistantTexts: ["A final answer without a reasoning summary."],
+    lastAssistant: { role: "assistant", content: "A final answer without a reasoning summary." },
+  },
+  noReasoningContext,
+);
 await noReasoning.handlers.get("agent_end")(
   {
     runId: "openclaw-run-2",
@@ -184,6 +229,41 @@ assert.equal(
   updatesFor("haco-run-2").some((update) => Object.hasOwn(update, "reasoning_content")),
   false,
 );
+
+// Operators can disable attempt-level Thinking without affecting the existing
+// activity and final-delivery lifecycle.
+const thinkingDisabled = harness({ ...baseConfig, thinkingStreaming: false });
+const thinkingDisabledRoute = {
+  conversationId: "thinking-disabled",
+  deliveryId: "delivery-thinking-disabled",
+  runId: "haco-run-thinking-disabled",
+};
+const thinkingDisabledContext = contextFor("openclaw-run-thinking-disabled", "openclaw-session-thinking-disabled");
+await thinkingDisabled.handlers.get("before_agent_run")(
+  {},
+  { ...thinkingDisabledContext, sessionKey: sessionKey(thinkingDisabledRoute) },
+);
+await thinkingDisabled.handlers.get("llm_output")(
+  {
+    runId: "openclaw-run-thinking-disabled",
+    assistantTexts: [],
+    lastAssistant: { role: "assistant", reasoning_content: "This update stays inside OpenClaw." },
+  },
+  thinkingDisabledContext,
+);
+assert.equal(
+  updatesFor("haco-run-thinking-disabled").some((update) => Object.hasOwn(update, "reasoning_content")),
+  false,
+);
+await thinkingDisabled.handlers.get("agent_end")(
+  {
+    runId: "openclaw-run-thinking-disabled",
+    success: true,
+    messages: [{ role: "assistant", content: "Activity-only delivery still completes." }],
+  },
+  thinkingDisabledContext,
+);
+assert.equal(updatesFor("haco-run-thinking-disabled").at(-1)?.status, "completed");
 
 // Separate Haco runs retain independent sequence counters even when the same
 // OpenClaw agent executes them concurrently.

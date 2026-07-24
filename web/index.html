@@ -444,7 +444,7 @@
               <div class="settings-card field-grid">
                 <label class="field"><span>Maximum upload size</span><small>Per attachment, in megabytes.</small><div class="input-suffix"><input name="max_upload_mb" type="number" min="1" max="1024" required /><span>MB</span></div></label>
                 <label class="field"><span>Message retention</span><small>Use 0 to keep history indefinitely.</small><div class="input-suffix"><input name="data_retention_days" type="number" min="0" max="36500" required /><span>days</span></div></label>
-                <label class="field"><span>Reasoning summary retention</span><small>Explicit agent-provided summaries are removed automatically; minimum 7 days.</small><div class="input-suffix"><input name="reasoning_retention_days" type="number" min="7" max="3650" required /><span>days</span></div></label>
+                <label class="field"><span>Thinking retention</span><small>Model-provided thinking is removed automatically; minimum 7 days.</small><div class="input-suffix"><input name="reasoning_retention_days" type="number" min="7" max="3650" required /><span>days</span></div></label>
               </div>
               <div class="settings-card security-note"><strong>Lifecycle jobs run automatically</strong><p>Expired sessions and stale unclaimed uploads are cleaned hourly. Message retention removes expired messages and their stored attachments.</p><button id="run-retention" class="btn-secondary" type="button">Run cleanup now</button><small id="retention-status"></small></div>
             </section>
@@ -549,7 +549,7 @@
           </details>
           <details class="reasoning-trace" hidden>
             <summary>
-              <span class="thinking-label">Reasoning summary</span>
+              <span class="thinking-label">Thinking</span>
               <span class="thinking-disclosure" aria-hidden="true">⌄</span>
             </summary>
             <pre class="thinking-content" hidden></pre>

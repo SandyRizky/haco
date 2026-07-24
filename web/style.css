@@ -1029,7 +1029,7 @@ select:focus-visible, summary:focus-visible, [tabindex]:focus-visible {
 
 .activity p { margin: 0; color: var(--text-secondary); font-size: 11px; line-height: 1.45; }
 
-/* Reasoning Trace (Agent Thinking) */
+/* Agent Thinking */
 .reasoning-trace {
   margin-top: 8px; overflow: hidden;
   border: 1px solid rgba(181, 154, 255, 0.24);

@@ -102,6 +102,30 @@ describe('live agent run cards', () => {
     assert.match(node.textContent, /Agent is working/);
   });
 
+  it('reveals Thinking only after a model provides it', (t) => {
+    const { hooks } = setupApp(t);
+    prepareConversation(hooks);
+    hooks.state.agentRuns.set('run-1', run({ activity_summary: 'Agent is working…' }));
+    hooks.renderMessages();
+
+    const node = hooks.dom.feed.querySelector('[data-run-id="run-1"]');
+    const thinking = node.querySelector('.reasoning-trace');
+    assert.equal(thinking.hidden, true);
+    assert.match(thinking.querySelector('summary').textContent, /Thinking/);
+
+    hooks.handleRealtimeUpdate({
+      type: 'agent_run_updated',
+      data: run({
+        activity_summary: 'Checking sources',
+        reasoning_content: 'The model exposed this structured Thinking update.',
+        reasoning_sequence: 1,
+      }),
+    });
+
+    assert.equal(thinking.hidden, false);
+    assert.match(thinking.querySelector('.thinking-content').textContent, /structured Thinking update/);
+  });
+
   it('renders a parent-bound direct-message run in the main feed', (t) => {
     const { hooks } = setupApp(t);
     prepareConversation(hooks);
