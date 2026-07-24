@@ -1,4 +1,4 @@
-const state = { conversations: [], selected: null, messages: [], currentUser: null, replyTo: null, threadRoot: null, socket: null, filter: 'all', adminToken: null, adminSettings: null, settingsTab: 'workspace', settingsView: 'personal', authStatus: null, users: [], conversationMembers: {}, modalSubmit: null, typingTimer: null, draftTimer: null, remoteTyping: new Map(), pendingAttachments: [], threadPendingAttachments: [], hasOlder: false, notifications: [], pushRegistration: null, pushConfiguration: null, openclawDiscovery: null, popoverMessage: null, richMode: false, loadingOlder: false, reconnectAttempts: 0, agentThinking: null, agentRuns: new Map(), sending: false, _selectGeneration: 0 };
+const state = { conversations: [], selected: null, messages: [], currentUser: null, replyTo: null, threadRoot: null, socket: null, filter: 'all', adminToken: null, adminSettings: null, settingsTab: 'workspace', settingsView: 'personal', authStatus: null, users: [], conversationMembers: {}, modalSubmit: null, typingTimer: null, draftTimer: null, remoteTyping: new Map(), pendingAttachments: [], threadPendingAttachments: [], hasOlder: false, notifications: [], pushRegistration: null, pushConfiguration: null, openclawDiscovery: null, popoverMessage: null, richMode: false, loadingOlder: false, reconnectAttempts: 0, agentRuns: new Map(), sending: false, _selectGeneration: 0 };
 const dom = {
   list: document.querySelector('#conversations'), forumList: document.querySelector('#forum-conversations'), directList: document.querySelector('#direct-conversations'), forumSection: document.querySelector('#forum-section'), directSection: document.querySelector('#direct-section'), feed: document.querySelector('#messages'), title: document.querySelector('#conversation-title'),
   kind: document.querySelector('#conversation-kind'), description: document.querySelector('#conversation-description'), status: document.querySelector('#connection-status'),
@@ -63,16 +63,86 @@ function activeRunsForConversation(conversationId) {
   );
 }
 
+function visibleRunsForConversation(conversationId) {
+  return [...state.agentRuns.values()].filter((run) => run.conversation_id === conversationId);
+}
+
 function activeRunsForThread(threadRootId) {
   return activeRunsForConversation(state.selected).filter((run) =>
     run.parent_message_id === threadRootId
   );
 }
 
+function visibleRunsForThread(threadRootId) {
+  return visibleRunsForConversation(state.selected).filter((run) =>
+    run.parent_message_id === threadRootId
+  );
+}
+
 function activeRunsForMainFeed() {
   return activeRunsForConversation(state.selected).filter((run) =>
-    !run.parent_message_id
+    !run.parent_message_id || !isSharedConversation()
   );
+}
+
+function visibleRunsForMainFeed() {
+  return visibleRunsForConversation(state.selected).filter((run) =>
+    !run.parent_message_id || !isSharedConversation()
+  );
+}
+
+function shouldKeepCurrentRun(current, incoming) {
+  const currentTerminal = isTerminalRunStatus(current.status);
+  const incomingTerminal = isTerminalRunStatus(incoming.status);
+  if (currentTerminal !== incomingTerminal) return currentTerminal;
+
+  const currentSequence = Number(current.reasoning_sequence || 0);
+  const incomingSequence = Number(incoming.reasoning_sequence || 0);
+  if (currentSequence !== incomingSequence) return currentSequence > incomingSequence;
+
+  const currentUpdated = Date.parse(current.updated_at || '');
+  const incomingUpdated = Date.parse(incoming.updated_at || '');
+  if (Number.isFinite(currentUpdated) && Number.isFinite(incomingUpdated) && currentUpdated !== incomingUpdated) {
+    return currentUpdated > incomingUpdated;
+  }
+
+  return true;
+}
+
+function runSnapshotForConversation(conversationId) {
+  return new Map(
+    [...state.agentRuns]
+      .filter(([, run]) => run.conversation_id === conversationId)
+      .map(([runId, run]) => [runId, run])
+  );
+}
+
+function runChangedSince(run, previous) {
+  return run.status !== previous.status
+    || Number(run.reasoning_sequence || 0) !== Number(previous.reasoning_sequence || 0)
+    || run.updated_at !== previous.updated_at
+    || run.activity_summary !== previous.activity_summary
+    || run.reasoning_content !== previous.reasoning_content
+    || run.error !== previous.error
+    || run.final_message_id !== previous.final_message_id;
+}
+
+function mergeAgentRunSnapshot(runs, conversationId, beforeRequest = new Map()) {
+  const merged = new Map((runs || []).map((run) => [run.id, run]));
+  for (const [runId, current] of state.agentRuns) {
+    if (current.conversation_id !== conversationId) continue;
+    const incoming = merged.get(runId);
+    if (incoming) {
+      if (shouldKeepCurrentRun(current, incoming)) merged.set(runId, current);
+      continue;
+    }
+
+    const previous = beforeRequest.get(runId);
+    if (isTerminalRunStatus(current.status) || !previous || runChangedSince(current, previous)) {
+      merged.set(runId, current);
+    }
+  }
+  state.agentRuns = merged;
 }
 
 const renderPlainTextBody = (text) => {
@@ -854,6 +924,9 @@ async function boot() {
     state.conversations = data.conversations;
     state.selected = data.conversations[0]?.id || null;
     state.messages = data.initial_messages;
+    // Runs are durable server state, so a refresh can restore live agent
+    // activity before the next WebSocket update arrives.
+    state.agentRuns = new Map((data.active_runs || []).map((run) => [run.id, run]));
     state.hasOlder = data.initial_messages.length === 50;
     state.users = await request('/api/users');
     fillSearchFilters();
@@ -1006,7 +1079,9 @@ function renderMessages() {
   const nonMessageNodes = [];
   for (const child of dom.feed.children) {
     if (child.dataset.messageId) existingNodes.set(child.dataset.messageId, child);
-    else if (!child.classList.contains('thinking-done') && !child.classList.contains('thinking-fade-in') && child.tagName !== 'DIV') nonMessageNodes.push(child);
+    // Live run cards are reconciled below by run id. Keeping their DOM nodes
+    // intact preserves an open details panel, selection, and scroll position.
+    else if (!child.classList.contains('agent-run')) nonMessageNodes.push(child);
   }
   nonMessageNodes.forEach((n) => n.remove());
 
@@ -1053,17 +1128,14 @@ function renderMessages() {
     }
   });
 
-  const existingThinking = dom.feed.querySelectorAll('.message.agent.thinking-fade-in, .message.agent-run');
-  existingThinking.forEach((el) => el.remove());
   if (!sharedConversation) {
-    const runs = activeRunsForMainFeed();
-    runs.forEach((run) => dom.feed.append(createLiveThinkingNode(run)));
-    if (!runs.length && state.agentThinking?.conversationId === state.selected) {
-      dom.feed.append(createLiveThinkingNode({ agent_principal: { display_name: state.agentThinking.name }, status: 'running', name: state.agentThinking.name, conversation_id: state.selected }));
-    }
+    const runs = visibleRunsForMainFeed();
+    syncLiveRunNodes(dom.feed, runs);
+  } else {
+    syncLiveRunNodes(dom.feed, []);
   }
 
-  const hasLiveContent = activeRunsForConversation(state.selected).length > 0 || state.agentThinking?.conversationId === state.selected;
+  const hasLiveContent = !sharedConversation && visibleRunsForMainFeed().length > 0;
   if (!visibleMessages.length && !hasLiveContent) dom.feed.innerHTML = '<div class="empty-feed"><svg width="36" height="36" viewBox="0 0 36 36" fill="none" aria-hidden="true"><circle cx="18" cy="13" r="5" stroke="currentColor" stroke-width="1.5"/><path d="M4 32c0-5.5 4-10 14-10s14 4.5 14 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M18 1v4M18 22v4M6 6l3 3M27 9l-3 3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" opacity="0.4"/></svg><strong>No messages yet</strong><p>Start the conversation with a person or agent.</p></div>';
   dom.loadOlder.hidden = !state.hasOlder;
   const latestMessage = visibleMessages[visibleMessages.length - 1];
@@ -1071,7 +1143,7 @@ function renderMessages() {
   if (dateLabel) {
     dateLabel.textContent = latestMessage ? formatMessageDate(latestMessage.created_at) : '';
   }
-  if (!state.loadingOlder && (scrollWasAtBottom || activeRunsForConversation(state.selected).length > 0 || state.agentThinking?.conversationId === state.selected)) {
+  if (!state.loadingOlder && scrollWasAtBottom) {
     requestAnimationFrame(() => { dom.feed.scrollTop = dom.feed.scrollHeight; });
   }
   state.loadingOlder = false;
@@ -1081,58 +1153,98 @@ function createLiveThinkingNode(run, options = {}) {
   const isRun = Boolean(run.conversation_id);
   const name = isRun ? (run.agent_principal?.display_name || 'Agent') : (run.name || 'Agent');
   const article = document.createElement('article');
-  article.className = `message agent-run${isTerminalRunStatus(run.status) ? ' thinking-done' : ' thinking-fade-in'}${options.thread ? ' thread-context' : ''}`;
-  if (isRun) article.dataset.runId = run.id;
+  article.className = `message agent agent-run${options.thread ? ' thread-context' : ''}`;
+  if (run.id) article.dataset.runId = run.id;
   const avatar = initialsFor(name);
-  const isDone = isTerminalRunStatus(run.status);
-  const isError = run.status === 'failed' || run.status === 'delivery_failed' || run.status === 'timed_out';
-
-  const startTime = isRun ? new Date(run.started_at).getTime() : Date.now();
-  const endTime = isRun ? (run.completed_at ? new Date(run.completed_at).getTime() : Date.now()) : Date.now();
-  const elapsed = Math.max(0, Math.round((endTime - startTime) / 1000));
-
-  let label;
-  if (isError) {
-    label = run.error ? `Error: ${run.error}`.substring(0, 60) : 'Error';
-  } else if (isDone) {
-    label = elapsed > 60 ? `Worked for ${Math.floor(elapsed / 60)}m ${elapsed % 60}s` : `Worked for ${elapsed}s`;
-  } else {
-    label = run.activity_summary ? `Agent activity: ${run.activity_summary}`.substring(0, 60) : 'Agent is working\u2026';
-  }
-
-  let summaryContent = '';
-  let reasoningContent = '';
-  let showActivity = false;
-  let showReasoning = false;
-
-  if (run.activity_summary) {
-    summaryContent = run.activity_summary;
-    showActivity = true;
-  }
-  if (run.reasoning_content) {
-    reasoningContent = run.reasoning_content;
-    showReasoning = true;
-  }
-  if (run.error) {
-    summaryContent = run.error;
-    showActivity = true;
-  }
-
-  const spinnerHtml = isDone ? '' : '<span class="thinking-spinner"></span>';
-
-  let detailsHtml = '';
-  if (showActivity) {
-    detailsHtml += `<details class="agent-activity"${!showReasoning ? ' open' : ''}><summary>${spinnerHtml}<span class="thinking-label">${escapeHtml(label)}</span><span class="thinking-disclosure" aria-hidden="true">\u2324</span></summary><pre class="activity-content">${escapeHtml(summaryContent)}</pre></details>`;
-  }
-  if (showReasoning) {
-    detailsHtml += `<details class="reasoning-trace" open><summary><span class="thinking-label">Reasoning summary</span><span class="thinking-disclosure" aria-hidden="true">\u2324</span></summary><pre class="thinking-content">${escapeHtml(reasoningContent)}</pre></details>`;
-  }
-  if (!showActivity && !showReasoning) {
-    detailsHtml = `<div class="thinking-label-only">${spinnerHtml}<span class="thinking-label">${escapeHtml(label)}</span></div>`;
-  }
-
-  article.innerHTML = `<span class="avatar-stack message-avatar-stack"><span class="avatar">${escapeHtml(avatar)}</span><span class="presence-bar agent online"></span></span><div class="message-content"><div class="message-meta"><strong>${escapeHtml(name)}</strong></div><div class="message-bubble thinking-live-bubble">${detailsHtml}</div></div>`;
+  article.innerHTML = `<span class="avatar-stack message-avatar-stack" aria-hidden="true"><span class="avatar">${escapeHtml(avatar)}</span><span class="presence-bar agent online"></span></span><div class="message-content"><div class="message-meta"><strong>${escapeHtml(name)}</strong></div><div class="message-bubble thinking-live-bubble" aria-live="polite"><div class="thinking-label-only"><span class="thinking-spinner" aria-hidden="true"></span><span class="thinking-label"></span></div><div class="thinking-terminal-status" role="status" hidden></div><details class="agent-activity" open hidden><summary><span class="thinking-spinner" aria-hidden="true"></span><span class="thinking-label">Agent activity</span><span class="thinking-disclosure" aria-hidden="true">\u2324</span></summary><pre class="activity-content" hidden></pre></details><details class="reasoning-trace" open hidden><summary><span class="thinking-label">Reasoning summary</span><span class="thinking-disclosure" aria-hidden="true">\u2324</span></summary><pre class="thinking-content" hidden></pre></details></div></div>`;
+  updateLiveThinkingNode(article, run, options);
   return article;
+}
+
+function liveRunLabel(run) {
+  const isDone = isTerminalRunStatus(run.status);
+  const isError = ['failed', 'delivery_failed', 'timed_out'].includes(run.status);
+  if (isError) return run.error ? `Error: ${run.error}` : 'Agent failed';
+  if (run.status === 'cancelled') return 'Cancelled';
+  if (isDone) return 'Completed';
+  return run.activity_summary || 'Agent is working\u2026';
+}
+
+function updateLiveThinkingNode(node, run, options = {}) {
+  const name = run.agent_principal?.display_name || run.name || 'Agent';
+  const isDone = isTerminalRunStatus(run.status);
+  const isError = ['failed', 'delivery_failed', 'timed_out'].includes(run.status);
+  const activityText = String(run.error || run.activity_summary || '');
+  const reasoningText = String(run.reasoning_content || '');
+  const labelText = liveRunLabel(run);
+
+  node.classList.toggle('thinking-done', isDone);
+  node.classList.toggle('thinking-fade-in', !isDone);
+  node.classList.toggle('thread-context', Boolean(options.thread));
+  node.dataset.runStatus = run.status || 'running';
+
+  const nameNode = node.querySelector('.message-meta strong');
+  if (nameNode) nameNode.textContent = name;
+  const avatar = node.querySelector('.avatar');
+  if (avatar) avatar.textContent = initialsFor(name);
+
+  const activity = node.querySelector('.agent-activity');
+  const activityContent = node.querySelector('.activity-content');
+  const activityLabel = activity?.querySelector('.thinking-label');
+  if (activity && activityContent) {
+    activity.hidden = !activityText;
+    activityContent.hidden = !activityText;
+    activityContent.textContent = activityText;
+    if (activityLabel) activityLabel.textContent = isError ? labelText : 'Agent activity';
+  }
+
+  const reasoning = node.querySelector('.reasoning-trace');
+  const reasoningContent = node.querySelector('.thinking-content');
+  if (reasoning && reasoningContent) {
+    reasoning.hidden = !reasoningText;
+    reasoningContent.hidden = !reasoningText;
+    reasoningContent.textContent = reasoningText;
+  }
+
+  const statusOnly = node.querySelector('.thinking-label-only');
+  if (statusOnly) {
+    statusOnly.hidden = Boolean(activityText || reasoningText);
+    const label = statusOnly.querySelector('.thinking-label');
+    if (label) label.textContent = labelText;
+  }
+
+  const terminalStatus = node.querySelector('.thinking-terminal-status');
+  if (terminalStatus) {
+    terminalStatus.hidden = !isDone;
+    terminalStatus.textContent = isDone ? labelText : '';
+  }
+
+  node.querySelectorAll('.thinking-spinner').forEach((spinner) => {
+    spinner.hidden = isDone;
+  });
+}
+
+function renderOrUpdateRunNode(run, container, options = {}) {
+  let node = [...container.children].find((child) => child.dataset?.runId === String(run.id));
+  if (!node) {
+    node = createLiveThinkingNode(run, options);
+    container.append(node);
+    return node;
+  }
+  updateLiveThinkingNode(node, run, options);
+  return node;
+}
+
+function syncLiveRunNodes(container, runs, options = {}) {
+  const runIds = new Set(runs.map((run) => String(run.id)));
+  [...container.children]
+    .filter((child) => child.classList?.contains('agent-run') && child.dataset?.runId && !runIds.has(child.dataset.runId))
+    .forEach((child) => child.remove());
+  runs.forEach((run) => {
+    const node = renderOrUpdateRunNode(run, container, options);
+    // A live card belongs after the final message, while retaining its node.
+    container.append(node);
+  });
 }
 
 function createMessageFallbackNode(message) {
@@ -1339,7 +1451,6 @@ async function removeMessage(message) {
 async function selectConversation(id, targetMessageId = null) {
   state.selected = id;
   state.replyTo = null;
-  state.agentThinking = null;
   state.agentRuns = new Map();
   state._thinkingStart = null;
   closeThread();
@@ -1355,9 +1466,10 @@ async function selectConversation(id, targetMessageId = null) {
     state.messages = await request(`/api/conversations/${id}/messages?limit=50`);
     if (generation !== state._selectGeneration) return;
     state.hasOlder = state.messages.length === 50;
+    const runStateBeforeRequest = runSnapshotForConversation(id);
     const runs = await request(`/api/conversations/${id}/agent-runs`);
     if (generation !== state._selectGeneration) return;
-    state.agentRuns = new Map(runs.map((r) => [r.id, r]));
+    mergeAgentRunSnapshot(runs, id, runStateBeforeRequest);
     const draft = await request(`/api/conversations/${id}/draft`);
     if (generation !== state._selectGeneration) return;
     dom.input.value = draft.body || ''; resizeComposer(); updateSendButton();
@@ -1417,23 +1529,51 @@ function renderThread() {
   const conversation = currentConversation();
   if (!isSharedConversation(conversation)) { closeThread(); return; }
   const replies = state.messages.filter((message) => message.parent_message_id === state.threadRoot.id);
-  const activeRuns = activeRunsForThread(state.threadRoot.id);
+  const activeRuns = visibleRunsForThread(state.threadRoot.id);
+  const wasAtBottom = dom.threadMessages.scrollTop >= dom.threadMessages.scrollHeight - dom.threadMessages.clientHeight - 20;
 
   dom.threadRoot.innerHTML = '';
-  dom.threadMessages.innerHTML = '';
   dom.threadRoot.append(createMessageNode(state.threadRoot, { thread: true }));
 
   if (!replies.length && !activeRuns.length) {
     dom.threadMessages.innerHTML = '<div class="thread-empty"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 4h16v12H8l-4 4V4Z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg><p>No replies yet. Start the thread below.</p></div>';
   } else {
-    replies.forEach((reply) => dom.threadMessages.append(createMessageNode(reply, { thread: true })));
-    activeRuns.forEach((run) => dom.threadMessages.append(createLiveThinkingNode(run, { thread: true })));
+    dom.threadMessages.querySelector('.thread-empty')?.remove();
+    const existingNodes = new Map();
+    [...dom.threadMessages.children].forEach((child) => {
+      if (child.dataset?.messageId) existingNodes.set(child.dataset.messageId, child);
+    });
+
+    replies.forEach((reply, index) => {
+      let node = existingNodes.get(reply.id);
+      const fingerprint = messageRenderFingerprint(reply);
+      if (node && node.dataset.renderFingerprint !== fingerprint) {
+        node.remove();
+        node = null;
+      }
+      if (node) {
+        existingNodes.delete(reply.id);
+      } else {
+        try {
+          node = createMessageNode(reply, { thread: true });
+        } catch (error) {
+          console.error('Unable to render thread reply', { messageId: reply?.id, error });
+          node = createMessageFallbackNode(reply);
+        }
+      }
+      const messageNodes = [...dom.threadMessages.children].filter((child) => child.dataset?.messageId);
+      const firstRun = [...dom.threadMessages.children].find((child) => child.classList?.contains('agent-run'));
+      if (node !== messageNodes[index]) {
+        dom.threadMessages.insertBefore(node, messageNodes[index] || firstRun || null);
+      }
+    });
+    existingNodes.forEach((node) => node.remove());
+    syncLiveRunNodes(dom.threadMessages, activeRuns, { thread: true });
   }
 
   dom.threadCount.textContent = `${replies.length} ${replies.length === 1 ? 'reply' : 'replies'}`;
   document.querySelector('.thread-header .eyebrow').textContent = conversation.kind === 'channel' ? 'Forum thread' : 'Group thread';
-  const wasAtBottom = dom.threadMessages.scrollTop >= dom.threadMessages.scrollHeight - dom.threadMessages.clientHeight - 20;
-  if (wasAtBottom || activeRuns.length > 0) {
+  if (wasAtBottom) {
     dom.threadMessages.scrollTop = dom.threadMessages.scrollHeight;
   }
 }
@@ -1484,13 +1624,6 @@ async function sendMessage(event) {
       body: JSON.stringify({ sender_id: state.currentUser.id, body, parent_message_id: state.replyTo?.id || null, attachments: state.pendingAttachments })
     });
     if (!state.messages.some((item) => item.id === message.id)) state.messages.push(message);
-    const conversation = currentConversation();
-    if (conversation?.kind === 'direct') {
-      const peer = directPeerFor(conversation);
-      if (peer?.kind === 'agent') {
-        state.agentThinking = { agentId: peer.id, name: peer.display_name, conversationId: state.selected };
-      }
-    }
     dom.input.value = '';
     state.pendingAttachments = []; renderPendingAttachments();
     request(`/api/conversations/${state.selected}/draft`, { method: 'PUT', body: JSON.stringify({ body: '' }) }).catch(() => {});
@@ -1640,19 +1773,26 @@ async function refreshConversations() {
 }
 async function catchUpMessages() {
   if (!state.selected) return;
+  const conversationId = state.selected;
+  const generation = state._selectGeneration;
   try {
-    const fresh = await request(`/api/conversations/${state.selected}/messages?limit=50`);
+    const fresh = await request(`/api/conversations/${conversationId}/messages?limit=50`);
+    if (state.selected !== conversationId || generation !== state._selectGeneration) return;
     state.messages = fresh;
     state.hasOlder = fresh.length === 50;
     renderMessages();
-    await request(`/api/conversations/${state.selected}/read`, { method: 'POST' });
+    await request(`/api/conversations/${conversationId}/read`, { method: 'POST' });
   } catch (_) {}
 }
 async function catchUpAgentRuns() {
   if (!state.selected || !state.currentUser) return;
+  const conversationId = state.selected;
+  const generation = state._selectGeneration;
+  const runStateBeforeRequest = runSnapshotForConversation(conversationId);
   try {
-    const runs = await request(`/api/conversations/${state.selected}/agent-runs`);
-    state.agentRuns = new Map(runs.map((r) => [r.id, r]));
+    const runs = await request(`/api/conversations/${conversationId}/agent-runs`);
+    if (state.selected !== conversationId || generation !== state._selectGeneration) return;
+    mergeAgentRunSnapshot(runs, conversationId, runStateBeforeRequest);
     renderMessages();
     if (state.threadRoot) renderThread();
   } catch (_) {}
@@ -1686,62 +1826,58 @@ function connectSocket() {
   socket.onmessage = (event) => {
     let update;
     try { update = JSON.parse(event.data); } catch (_) { return; }
-    if (update.type === 'message_created') {
-      refreshConversations();
-      refreshNotifications();
-      if (update.data.sender?.kind === 'agent' && update.data.conversation_id === state.selected) {
-        if (state.agentThinking?.agentId === update.data.sender.id) state.agentThinking = null;
-        for (const [id, run] of state.agentRuns) {
-          if (run.agent_principal?.id === update.data.sender.id && !isTerminalRunStatus(run.status)) {
-            run.status = 'completed';
-            run.completed_at = update.data.created_at;
+    handleRealtimeUpdate(update);
+  };
+}
+
+function handleRealtimeUpdate(update) {
+  if (update.type === 'message_created') {
+    refreshConversations();
+    refreshNotifications();
+    if (update.data.conversation_id === state.selected && !state.messages.some((message) => message.id === update.data.id)) {
+      state.messages.push(update.data);
+      renderMessages();
+      if (state.threadRoot && (update.data.parent_message_id === state.threadRoot.id || update.data.id === state.threadRoot.id)) renderThread();
+    }
+  } else if (update.type === 'message_updated') {
+    const index = state.messages.findIndex((message) => message.id === update.data.id);
+    if (index >= 0) { state.messages[index] = update.data; renderMessages(); if (state.threadRoot) renderThread(); }
+  } else if (update.type === 'message_deleted') {
+    const message = state.messages.find((item) => item.id === update.data.message_id);
+    if (message) { message.body = 'Message deleted'; message.is_deleted = true; message.activity = null; message.attachments = []; renderMessages(); if (state.threadRoot) renderThread(); }
+  } else if (update.type === 'typing' && update.data.principal.id !== state.currentUser?.id) {
+    const key = `${update.data.conversation_id}:${update.data.principal.id}`;
+    clearTimeout(state.remoteTyping.get(key)?.timer);
+    if (update.data.active) {
+      state.remoteTyping.set(key, { name: update.data.principal.display_name, conversation: update.data.conversation_id, timer: setTimeout(() => { state.remoteTyping.delete(key); renderTyping(); }, 3500) });
+    } else state.remoteTyping.delete(key);
+    renderTyping();
+  } else if (update.type === 'presence_updated') {
+    const user = state.users.find((item) => item.id === update.data.id);
+    if (user) user.presence = update.data.presence;
+    if (state.currentUser?.id === update.data.id) { state.currentUser.presence = update.data.presence; renderProfile(); }
+    renderConversations();
+    if (!dom.membersPopover.hidden && state.conversationMembers[state.selected]) renderMembersPopover(state.conversationMembers[state.selected]);
+  } else if (update.type === 'agent_run_updated') {
+    const run = update.data;
+    if (run.conversation_id === state.selected) {
+      const current = state.agentRuns.get(run.id);
+      if (current && shouldKeepCurrentRun(current, run)) return;
+      state.agentRuns.set(run.id, run);
+      renderMessages();
+      if (state.threadRoot) renderThread();
+      if (isTerminalRunStatus(run.status)) {
+        window.setTimeout(() => {
+          const current = state.agentRuns.get(run.id);
+          if (current && isTerminalRunStatus(current.status)) {
+            state.agentRuns.delete(run.id);
+            renderMessages();
+            if (state.threadRoot) renderThread();
           }
-        }
-      }
-      if (update.data.conversation_id === state.selected && !state.messages.some((message) => message.id === update.data.id)) {
-        state.messages.push(update.data);
-        renderMessages();
-        if (state.threadRoot && (update.data.parent_message_id === state.threadRoot.id || update.data.id === state.threadRoot.id)) renderThread();
-      }
-    } else if (update.type === 'message_updated') {
-      const index = state.messages.findIndex((message) => message.id === update.data.id);
-      if (index >= 0) { state.messages[index] = update.data; renderMessages(); if (state.threadRoot) renderThread(); }
-    } else if (update.type === 'message_deleted') {
-      const message = state.messages.find((item) => item.id === update.data.message_id);
-      if (message) { message.body = 'Message deleted'; message.is_deleted = true; message.activity = null; message.attachments = []; renderMessages(); if (state.threadRoot) renderThread(); }
-    } else if (update.type === 'typing' && update.data.principal.id !== state.currentUser?.id) {
-      const key = `${update.data.conversation_id}:${update.data.principal.id}`;
-      clearTimeout(state.remoteTyping.get(key)?.timer);
-      if (update.data.active) {
-        state.remoteTyping.set(key, { name: update.data.principal.display_name, conversation: update.data.conversation_id, timer: setTimeout(() => { state.remoteTyping.delete(key); renderTyping(); }, 3500) });
-      } else state.remoteTyping.delete(key);
-      renderTyping();
-    } else if (update.type === 'presence_updated') {
-      const user = state.users.find((item) => item.id === update.data.id);
-      if (user) user.presence = update.data.presence;
-      if (state.currentUser?.id === update.data.id) { state.currentUser.presence = update.data.presence; renderProfile(); }
-      renderConversations();
-      if (!dom.membersPopover.hidden && state.conversationMembers[state.selected]) renderMembersPopover(state.conversationMembers[state.selected]);
-    } else if (update.type === 'agent_run_updated') {
-      const run = update.data;
-      if (run.conversation_id === state.selected) {
-        state.agentThinking = null;
-        state.agentRuns.set(run.id, run);
-        renderMessages();
-        if (state.threadRoot) renderThread();
-        if (isTerminalRunStatus(run.status)) {
-          window.setTimeout(() => {
-            const current = state.agentRuns.get(run.id);
-            if (current && isTerminalRunStatus(current.status)) {
-              state.agentRuns.delete(run.id);
-              renderMessages();
-              if (state.threadRoot) renderThread();
-            }
-          }, 3000);
-        }
+        }, 3000);
       }
     }
-  };
+  }
 }
 
 function renderTyping() {
@@ -1932,4 +2068,26 @@ document.addEventListener('keydown', (event) => {
 document.addEventListener('click', (event) => {
   if (!dom.membersPopover.hidden && !dom.membersPopover.contains(event.target) && !dom.conversationMembers.contains(event.target)) closeMembersPopover();
 });
-initializeAuth();
+if (!window.__HACO_TEST_MODE__) initializeAuth();
+
+// Kept opt-in so browser behavior is unchanged; it lets the jsdom suite
+// exercise the actual live-run reconciliation code instead of a copy of it.
+if (window.__HACO_TEST_HOOKS__) {
+  Object.assign(window.__HACO_TEST_HOOKS__, {
+    state,
+    dom,
+    activeRunsForMainFeed,
+    activeRunsForThread,
+    mergeAgentRunSnapshot,
+    createLiveThinkingNode,
+    updateLiveThinkingNode,
+    renderOrUpdateRunNode,
+    syncLiveRunNodes,
+    renderMessages,
+    renderThread,
+    handleRealtimeUpdate,
+    catchUpAgentRuns,
+    catchUpMessages,
+    boot
+  });
+}

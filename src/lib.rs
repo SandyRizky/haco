@@ -122,13 +122,17 @@ pub struct RunUpdateRequest {
     pub status: Option<String>,
     pub activity_summary: Option<String>,
     pub reasoning_content: Option<String>,
-    #[serde(default)]
+    #[serde(default = "default_run_update_content_mode")]
     pub content_mode: String,
     #[serde(default)]
     pub sequence: i64,
     #[serde(default)]
     pub done: bool,
     pub error: Option<String>,
+}
+
+fn default_run_update_content_mode() -> String {
+    "snapshot".into()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
